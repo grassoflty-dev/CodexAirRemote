@@ -17,8 +17,18 @@ New-Item -ItemType Directory -Force -Path (Join-Path $PSScriptRoot '.tools') | O
 Push-Location (Join-Path $PSScriptRoot 'firmware')
 try {
     $log = Join-Path $PSScriptRoot '.tools\build.log'
-    & "$env:IDF_PYTHON_ENV_PATH\Scripts\python.exe" "$env:IDF_PATH\tools\idf.py" build 2>&1 | Tee-Object -FilePath $log
-    if ($LASTEXITCODE -ne 0) { throw 'Firmware build failed.' }
+    $savedErrorAction = $ErrorActionPreference
+    try {
+        # Windows PowerShell reports native stderr as ErrorRecords, including
+        # harmless CMake warnings. Let the process exit code decide success.
+        $ErrorActionPreference = 'Continue'
+        & "$env:IDF_PYTHON_ENV_PATH\Scripts\python.exe" "$env:IDF_PATH\tools\idf.py" build 2>&1 |
+            ForEach-Object { $_.ToString() } | Tee-Object -FilePath $log
+        $buildExitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $savedErrorAction
+    }
+    if ($buildExitCode -ne 0) { throw 'Firmware build failed.' }
     $files = (Get-Content -Raw 'build\flasher_args.json' | ConvertFrom-Json).flash_files
     $manifest = [ordered]@{}
     foreach ($file in $files.PSObject.Properties) {
