@@ -1,0 +1,49 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "辅助程序：打包 EXE",
+      "type": "process",
+      "command": "powershell.exe",
+      "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/Build-App.ps1"],
+      "options": {"cwd": "${workspaceFolder}"},
+      "group": {"kind": "build", "isDefault": true},
+      "problemMatcher": [],
+      "presentation": {"reveal": "always", "panel": "shared"}
+    },
+    {
+      "label": "固件：编译",
+      "type": "process",
+      "command": "powershell.exe",
+      "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/Build.ps1"],
+      "options": {"cwd": "${workspaceFolder}"},
+      "group": "build",
+      "problemMatcher": ["$gcc"],
+      "presentation": {"reveal": "always", "panel": "shared"}
+    },
+    {
+      "label": "全部：编译固件并打包辅助程序",
+      "dependsOn": ["固件：编译", "辅助程序：打包 EXE"],
+      "dependsOrder": "sequence",
+      "group": "build",
+      "problemMatcher": []
+    },
+    {
+      "label": "辅助程序：运行源码界面",
+      "type": "process",
+      "command": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "args": ["${workspaceFolder}/host/desktop.py"],
+      "options": {"cwd": "${workspaceFolder}"},
+      "problemMatcher": []
+    },
+    {
+      "label": "辅助程序：离线协议检查（模拟设备）",
+      "type": "process",
+      "command": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "args": ["${workspaceFolder}/host/offline_check.py"],
+      "options": {"cwd": "${workspaceFolder}"},
+      "group": "test",
+      "problemMatcher": []
+    }
+  ]
+}

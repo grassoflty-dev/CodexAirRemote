@@ -1,0 +1,15 @@
+Codex Air Remote
+Copyright 2026 grassoflty-dev and contributors
+
+Original project source is licensed under Apache License 2.0.
+Dependencies retain their own copyrights and licenses. See THIRD_PARTY_NOTICES.md.
+
+This project uses Espressif ESP-IDF, Waveshare board support components and LVGL.
+These upstream projects and their respective contributors retain their copyrights.
+The repository references these dependencies rather than vendoring the SDK.
+
+This is an independent community project. OpenAI, Codex, Espressif and Waveshare
+names identify compatible products; no affiliation or endorsement is claimed.
+
+No OpenAI desktop application, model, virtual audio driver, private credentials,
+or device-specific firmware image is included in the source distribution.

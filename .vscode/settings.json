@@ -1,0 +1,22 @@
+{
+  "python.defaultInterpreterPath": "${workspaceFolder}/.venv/Scripts/python.exe",
+  "python.analysis.extraPaths": ["${workspaceFolder}/host"],
+  "C_Cpp.default.compileCommands": "${workspaceFolder}/firmware/build/compile_commands.json",
+  "files.encoding": "utf8",
+  "files.exclude": {
+    "**/__pycache__": true,
+    ".venv": true,
+    ".tools": true,
+    "app/_internal": true,
+    "firmware/build": true,
+    "firmware/managed_components": true
+  },
+  "search.exclude": {
+    ".local": true,
+    ".venv": true,
+    ".tools": true,
+    "app": true,
+    "firmware/build": true,
+    "firmware/managed_components": true
+  }
+}
