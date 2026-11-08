@@ -1,0 +1,36 @@
+{
+  "idf.eimIdfJsonPath": "C:/Espressif-AirRemote/eim_idf.json",
+  "idf.currentSetup": "C:/Espressif-AirRemote/v5.5.5/esp-idf",
+  "idf.extensionActivationMode": "detect",
+  "idf.flashType": "UART",
+  "idf.flashBaudRate": "921600",
+  "idf.monitorBaudRate": "115200",
+  "idf.buildPath": "build",
+  "idf.sdkconfigDefaults": [
+    "${workspaceFolder}/sdkconfig.defaults"
+  ],
+  "idf.sdkconfigFilePath": "${workspaceFolder}/sdkconfig",
+  "idf.partitionToUse": "all",
+  "idf.customExtraVars": {
+    "IDF_TOOLS_PATH": "C:/Espressif/tools"
+  },
+  "C_Cpp.default.compileCommands": "${workspaceFolder}/build/compile_commands.json",
+  "C_Cpp.default.cStandard": "c17",
+  "C_Cpp.default.cppStandard": "c++20",
+  "files.associations": {
+    "*.h": "c",
+    "*.c": "c",
+    "*.cpp": "cpp",
+    "sdkconfig.defaults": "properties"
+  },
+  "files.exclude": {
+    "build": true,
+    "managed_components": true,
+    "sdkconfig": true,
+    "sdkconfig.old": true
+  },
+  "search.exclude": {
+    "build": true,
+    "managed_components": true
+  }
+}

@@ -1,4 +1,7 @@
-# Official Waveshare Brookesia factory-only layout, V1 and V2
+# Codex Air Remote flash layout, 16 MB.
+# The Windows companion (windows/host/flash.py) expects these four images at
+# fixed offsets: bootloader 0x0, partition table 0x8000, otadata 0x10d000,
+# application 0x200000. Keep this layout in sync with that script.
 nvsfactory,  data, nvs,     0x00009000,  200K,
 nvs,         data, nvs,     0x0003B000,  840K,
 otadata,     data, ota,     0x0010D000,  0x2000,

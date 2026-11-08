@@ -1,5 +1,10 @@
 # Codex Air Remote 本机验证记录
 
+> **历史记录（ESP32-S3 时代）**：本文件记录的是 2026‑11‑06 迁移到
+> ESP32-C6-Touch-AMOLED-2.16 之前的验证结果。其中“本地语音识别 / Fun-ASR /
+> faster-whisper / CUDA”等章节对应已经移除的早期功能，不代表当前 C6 版本的
+> 状态。当前版本缺少开发板实机验收，见 [docs/firmware-c6-migration.md](docs/firmware-c6-migration.md)。
+
 2026‑11‑06，Windows 11。开发板按用户安排留到交付后连接和烧录。
 
 | 项目 | 结果 |

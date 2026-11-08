@@ -1,0 +1,28 @@
+{
+  "python.defaultInterpreterPath": "${workspaceFolder}/.venv/Scripts/python.exe",
+  "python.terminal.activateEnvironment": true,
+  "python.analysis.extraPaths": [
+    "${workspaceFolder}/host"
+  ],
+  "python.testing.unittestEnabled": true,
+  "python.testing.unittestArgs": [
+    "-v",
+    "-s",
+    "${workspaceFolder}/tests",
+    "-p",
+    "test_*.py"
+  ],
+  "files.exclude": {
+    "**/__pycache__": true,
+    ".venv": true,
+    ".local": true,
+    "build": true,
+    "app": true
+  },
+  "search.exclude": {
+    ".venv": true,
+    ".local": true,
+    "build": true,
+    "app": true
+  }
+}

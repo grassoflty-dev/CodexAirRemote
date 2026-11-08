@@ -2,8 +2,7 @@
 #include <string.h>
 #include "air_mouse.h"
 #include "ble_mouse.h"
-#include "bsp/esp-bsp.h"
-#include "driver/i2c_master.h"
+#include "board.h"
 #include "esp_flash.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -14,7 +13,6 @@
 static const char *TAG = "air_remote";
 static lv_obj_t *ble_label, *battery_label, *status_label, *gyro_button, *voice_button;
 static lv_obj_t *a_button, *b_button, *a_hint, *b_hint;
-static i2c_master_dev_handle_t pmu;
 static bool mouse_active, mouse_ready, voice_ready, ble_ready;
 static const char *mouse_message = "Tap a mode to begin";
 static uint32_t last_interaction, last_battery_update;
@@ -89,13 +87,7 @@ static void action_touch(lv_event_t *event)
 
 static int battery_percent(void)
 {
-    if (!pmu) return -1;
-    uint8_t reg = 0x00, status, percent;
-    if (i2c_master_transmit_receive(pmu, &reg, 1, &status, 1, 12) != ESP_OK ||
-        !(status & (1 << 3))) return -1;
-    reg = 0xa4;
-    if (i2c_master_transmit_receive(pmu, &reg, 1, &percent, 1, 12) != ESP_OK || percent > 100) return -1;
-    return percent;
+    return board_battery_percent();
 }
 
 static void update_label(lv_obj_t *label, const char *value)
@@ -154,7 +146,7 @@ static void render(lv_timer_t *timer)
     }
 
     int requested = mouse_active || recording_mode || lv_tick_elaps(last_interaction) < 25000 ? 70 : 24;
-    if (requested != brightness && bsp_display_brightness_set(requested) == ESP_OK) brightness = requested;
+    if (requested != brightness && board_set_brightness(requested) == ESP_OK) brightness = requested;
 }
 
 static lv_obj_t *make_button(lv_obj_t *parent, int x, int y, uint32_t color)
@@ -241,7 +233,7 @@ static void letter_icon(lv_obj_t *button, const char *letter)
 
 static bool ui_init(lv_display_t *display)
 {
-    if (!bsp_display_lock(1000)) return false;
+    if (!board_lock(1000)) return false;
     lv_obj_t *screen = lv_display_get_screen_active(display);
     lv_obj_set_style_bg_color(screen, lv_color_hex(0x0b121d), 0);
     lv_obj_set_style_text_color(screen, lv_color_hex(0xc2cedb), 0);
@@ -254,10 +246,11 @@ static bool ui_init(lv_display_t *display)
     lv_obj_align(ble_label, LV_ALIGN_TOP_LEFT, 25, 69);
     battery_label = lv_label_create(screen);
     lv_obj_align(battery_label, LV_ALIGN_TOP_RIGHT, -25, 69);
-    voice_button = make_button(screen, 24, 106, 0x844351);
-    gyro_button = make_button(screen, 194, 106, 0x266e84);
-    a_button = make_button(screen, 24, 232, 0x266e84);
-    b_button = make_button(screen, 194, 232, 0x844351);
+    /* 480 x 480 AMOLED: two 150 px columns centred with a 96 px gutter. */
+    voice_button = make_button(screen, 42, 112, 0x844351);
+    gyro_button = make_button(screen, 288, 112, 0x266e84);
+    a_button = make_button(screen, 42, 252, 0x266e84);
+    b_button = make_button(screen, 288, 252, 0x844351);
     mode_icon(voice_button, true);
     mode_icon(gyro_button, false);
     button_caption(voice_button, "Voice");
@@ -275,14 +268,14 @@ static bool ui_init(lv_display_t *display)
     lv_obj_add_event_cb(a_button, action_touch, LV_EVENT_ALL, NULL);
     lv_obj_add_event_cb(b_button, action_touch, LV_EVENT_ALL, NULL);
     status_label = lv_label_create(screen);
-    lv_obj_set_width(status_label, 308);
+    lv_obj_set_width(status_label, 420);
     lv_obj_set_style_text_align(status_label, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_long_mode(status_label, LV_LABEL_LONG_WRAP);
-    lv_obj_align(status_label, LV_ALIGN_TOP_MID, 0, 367);
+    lv_obj_align(status_label, LV_ALIGN_TOP_MID, 0, 404);
     last_interaction = lv_tick_get();
     lv_timer_create(render, 125, NULL);
     render(NULL);
-    bsp_display_unlock();
+    board_unlock();
     return true;
 }
 
@@ -290,8 +283,8 @@ void app_main(void)
 {
     uint32_t flash_size = 0;
     esp_flash_get_size(NULL, &flash_size);
-    ESP_LOGI(TAG, "Flash %lu bytes; PSRAM %u bytes free",
-             (unsigned long)flash_size, (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+    ESP_LOGI(TAG, "Flash %lu bytes; internal heap %u bytes free",
+             (unsigned long)flash_size, (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
 
     esp_err_t nvs_status = nvs_flash_init();
     if (nvs_status == ESP_OK) {
@@ -301,18 +294,13 @@ void app_main(void)
         ESP_LOGE(TAG, "NVS unavailable: %s", esp_err_to_name(nvs_status));
     }
 
-    lv_display_t *display = bsp_display_start();
+    /* I2C, AXP2101, AMOLED + touch, LVGL adapter and codec. */
+    esp_err_t board_status = board_init();
+    lv_display_t *display = board_status == ESP_OK ? board_display() : NULL;
     if (!display) {
         provision_report_board(0);
         ESP_LOGE(TAG, "BSP could not start the panel and touch");
         return;
-    }
-    i2c_master_bus_handle_t bus = bsp_i2c_get_handle();
-    const i2c_device_config_t battery = {
-        .device_address = 0x34, .scl_speed_hz = 400000, .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-    };
-    if (i2c_master_probe(bus, battery.device_address, 40) == ESP_OK) {
-        i2c_master_bus_add_device(bus, &battery, &pmu);
     }
     mouse_ready = mouse_init() == ESP_OK;
     if (nvs_status == ESP_OK) {
@@ -322,6 +310,6 @@ void app_main(void)
     bool ui_ready = ui_init(display);
     unsigned flags = (mouse_ready ? 1 : 0) | (ble_ready ? 2 : 0) | (voice_ready ? 4 : 0);
     provision_report_board(ui_ready ? flags : 0);
-    ESP_LOGI(TAG, "AIRREMOTE UI READY; IMU=%d BLE=%d VOICE=%d PMU=%d",
-             mouse_ready, ble_ready, voice_ready, pmu != NULL);
+    ESP_LOGI(TAG, "AIRREMOTE UI READY; IMU=%d BLE=%d VOICE=%d PMIC=%d",
+             mouse_ready, ble_ready, voice_ready, board_battery_connected());
 }

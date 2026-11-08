@@ -4,10 +4,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include "bsp/esp-bsp.h"
+#include "board.h"
 #include "esp_check.h"
 #include "esp_codec_dev.h"
-#include "esp_codec_dev_defaults.h"
 #include "esp_event.h"
 #include "esp_heap_caps.h"
 #include "esp_https_server.h"
@@ -23,7 +22,8 @@
 
 static const char *TAG = "voice";
 enum {
-    PCM_BYTES = 640, BUFFER_BYTES = 128000, BATCH_BYTES = 5 * PCM_BYTES,
+    PCM_BYTES = 640, STEREO_BYTES = PCM_BYTES * 2, BUFFER_BYTES = 48000,
+    BATCH_BYTES = 5 * PCM_BYTES,
     DISCOVERY_PORT = 47682, VOICE_PORT = 47683, MAX_RECORD_SECONDS = 60
 };
 
@@ -41,7 +41,6 @@ static atomic_int state, terminal_result, client_fd, end_action;
 static atomic_bool stop_requested, capture_done, capture_allowed, have_ip, wifi_dropped;
 static atomic_uint last_client_tick;
 static uint32_t sequence;
-
 static bool is_terminal(voice_state_t value) { return value >= VOICE_SENT; }
 voice_state_t voice_state(void) { return atomic_load(&state); }
 
@@ -140,28 +139,31 @@ static esp_err_t voice_ws(httpd_req_t *request)
 static void capture_task(void *unused)
 {
     voice_state_t result = VOICE_IDLE;
-    esp_codec_dev_sample_info_t format = {
-        .bits_per_sample = 16, .channel = 1, .sample_rate = 16000, .mclk_multiple = 256,
-    };
-    if (!microphone) microphone = bsp_audio_codec_microphone_init();
-    if (!microphone || esp_codec_dev_open(microphone, &format) != ESP_CODEC_DEV_OK) {
+    microphone = board_microphone();
+    if (!microphone) {
         atomic_store(&terminal_result, VOICE_AUDIO_ERROR);
         atomic_store(&capture_done, true);
         vTaskDelete(NULL);
         return;
     }
-    if (esp_codec_dev_set_in_gain(microphone, 30) != ESP_CODEC_DEV_OK) result = VOICE_AUDIO_ERROR;
+    /* The board's ES7210 microphone runs as a 16 kHz stereo TDM stream; the
+     * voice protocol carries 16 kHz mono PCM, so downmix each 20 ms frame. */
+    if (esp_codec_dev_set_in_gain(microphone, 25) != ESP_CODEC_DEV_OK) result = VOICE_AUDIO_ERROR;
     if (!atomic_load(&stop_requested) && result == VOICE_IDLE) {
         atomic_store(&state, VOICE_RECORDING);
-        ESP_LOGI(TAG, "ES8311 recording at 16 kHz");
-        int16_t samples[PCM_BYTES / sizeof(int16_t)];
+        ESP_LOGI(TAG, "ES7210 recording at 16 kHz stereo");
+        int16_t stereo[STEREO_BYTES / sizeof(int16_t)];
+        int16_t mono[PCM_BYTES / sizeof(int16_t)];
         for (int frame = 0; frame < MAX_RECORD_SECONDS * 50 && !atomic_load(&stop_requested); frame++) {
-            if (esp_codec_dev_read(microphone, samples, sizeof(samples)) != ESP_CODEC_DEV_OK) {
+            if (esp_codec_dev_read(microphone, stereo, sizeof(stereo)) != ESP_CODEC_DEV_OK) {
                 result = VOICE_AUDIO_ERROR;
                 break;
             }
-            if (xStreamBufferSpacesAvailable(audio) < sizeof(samples) ||
-                xStreamBufferSend(audio, samples, sizeof(samples), 0) != sizeof(samples)) {
+            for (size_t i = 0; i < sizeof(mono) / sizeof(mono[0]); i++) {
+                mono[i] = (int16_t)((stereo[2 * i] + stereo[2 * i + 1]) / 2);
+            }
+            if (xStreamBufferSpacesAvailable(audio) < sizeof(mono) ||
+                xStreamBufferSend(audio, mono, sizeof(mono), 0) != sizeof(mono)) {
                 result = VOICE_NETWORK_ERROR;
                 break;
             }
@@ -169,7 +171,6 @@ static void capture_task(void *unused)
     } else if (result == VOICE_IDLE) {
         result = VOICE_CANCELLED;
     }
-    esp_codec_dev_close(microphone);
     if (result == VOICE_IDLE) {
         atomic_store(&state, VOICE_RECOGNIZING);
     } else {
@@ -265,7 +266,7 @@ static voice_state_t serve_voice(void)
             result = VOICE_NO_PC;
         } else if (!atomic_load(&capture_allowed)) {
             result = VOICE_SEND_ERROR;
-        } else if (xTaskCreate(capture_task, "mic_capture", 6144, NULL, 7, NULL) != pdPASS) {
+        } else if (xTaskCreate(capture_task, "mic_capture", 8192, NULL, 7, NULL) != pdPASS) {
             result = VOICE_AUDIO_ERROR;
         } else {
             int64_t recognition_deadline = 0;
@@ -309,9 +310,7 @@ static void voice_task(void *unused)
 
 esp_err_t voice_init(void)
 {
-    ESP_RETURN_ON_ERROR(i2c_master_probe(bsp_i2c_get_handle(), ES8311_CODEC_DEFAULT_ADDR >> 1, 50),
-                        TAG, "ES8311 I2C probe");
-    uint8_t *storage = heap_caps_malloc(BUFFER_BYTES + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    uint8_t *storage = heap_caps_malloc(BUFFER_BYTES + 1, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     ESP_RETURN_ON_FALSE(storage, ESP_ERR_NO_MEM, TAG, "PCM buffer");
     audio = xStreamBufferCreateStatic(BUFFER_BYTES + 1, PCM_BYTES, storage, &stream_storage);
     ESP_RETURN_ON_FALSE(audio, ESP_ERR_NO_MEM, TAG, "PCM stream");

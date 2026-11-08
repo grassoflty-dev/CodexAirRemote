@@ -3,7 +3,8 @@
 #include <math.h>
 #include <stdatomic.h>
 #include "ble_mouse.h"
-#include "bsp/esp-bsp.h"
+#include "board.h"
+#include "driver/i2c_master.h"
 #include "esp_check.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -193,7 +194,8 @@ static void mouse_task(void *unused)
 
 esp_err_t mouse_init(void)
 {
-    i2c_master_bus_handle_t bus = bsp_i2c_get_handle();
+    i2c_master_bus_handle_t bus = board_i2c_bus();
+    ESP_RETURN_ON_FALSE(bus, ESP_ERR_INVALID_STATE, TAG, "I2C bus is not ready");
     uint8_t address = QMI8658_ADDRESS_HIGH;
     if (i2c_master_probe(bus, address, 50) != ESP_OK) address = QMI8658_ADDRESS_LOW;
     ESP_RETURN_ON_ERROR(qmi8658_init(&imu, bus, address), TAG, "QMI8658");

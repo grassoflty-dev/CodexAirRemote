@@ -1,8 +1,40 @@
 {
   "folders": [
     {
-      "name": "Codex Air Remote · 固件与辅助程序",
-      "path": "."
+      "name": "Windows 辅助程序",
+      "path": "windows"
+    },
+    {
+      "name": "ESP32-C6 固件",
+      "path": "firmware"
     }
-  ]
+  ],
+  "settings": {
+    "files.encoding": "utf8",
+    "files.trimTrailingWhitespace": true,
+    "files.insertFinalNewline": true,
+    "search.exclude": {
+      "**/build": true,
+      "**/managed_components": true,
+      "**/.venv": true,
+      "**/.local": true,
+      "**/app": true,
+      "**/archive": true,
+      "**/vendor": true
+    },
+    "files.exclude": {
+      "**/__pycache__": true,
+      "**/managed_components": true,
+      "**/.venv": true,
+      "**/archive": true
+    }
+  },
+  "extensions": {
+    "recommendations": [
+      "ms-python.python",
+      "ms-python.debugpy",
+      "ms-vscode.cpptools",
+      "espressif.esp-idf-extension"
+    ]
+  }
 }
