@@ -1,4 +1,4 @@
-#include <stdio.h>
+﻿#include <stdio.h>
 #include <freertos/FreeRTOS.h>
 #include <driver/gpio.h>
 #include <esp_err.h>
@@ -147,9 +147,3 @@ int Axp2101_GetBatteryPercent(void) {
     return percent <= 100 ? (int)percent : -1;
 }
 
-
-/* TEMP panel bisect: report whether the panel rail is actually enabled. */
-bool Axp2101_IsAldo3Enabled(void)
-{
-    return axp2101.isEnableALDO3();
-}

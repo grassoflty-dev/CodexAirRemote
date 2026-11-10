@@ -141,7 +141,8 @@ static void mouse_task(void *unused)
             continue;
         }
         read_errors = 0;
-        if (!atomic_load(&calibrated) && now - calibration_started > 15000000) {
+        if (!atomic_load(&calibrated) && now - calibration_started > 30000000) {
+            ESP_LOGW(TAG, "IMU calibration timeout: keep the board still after tapping Gyro");
             atomic_store(&failed, true);
             atomic_store(&requested, false);
             continue;
@@ -166,6 +167,7 @@ static void mouse_task(void *unused)
                 gravity = unit(sum_accel);
                 axis = pitch_axis(gravity, (vec){0});
                 atomic_store(&calibrated, true);
+                ESP_LOGI(TAG, "IMU calibrated after %d samples", collected);
             } else {
                 gyro = add(gyro, scale(bias, -1));
                 // The gravity vector is the part of the six-axis attitude used here.

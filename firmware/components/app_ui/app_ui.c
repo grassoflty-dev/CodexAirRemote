@@ -114,9 +114,15 @@ static void render(lv_timer_t *timer)
         }
     }
 
+    /* A failed zero-rate calibration stops the sensor task silently; fold it
+     * back into the idle state so the user sees why the cursor does not move. */
+    if (mouse_active && mouse_failed()) {
+        mouse_active = false;
+        mouse_message = "Calibration failed, tap Gyro and hold still";
+    }
     const char *status = voice != VOICE_IDLE ? voice_message(voice) : mouse_message;
     if (mouse_active) {
-        status = !mouse_calibrated() ? "Hold still to calibrate..." :
+        status = !mouse_calibrated() ? "Calibrating - hold the board still" :
                  linked ? "Mouse active  /  A left, B right" : "Pair Codex Air Remote in Windows";
     } else if (!recording_mode && strcmp(mouse_message, "Tap a mode to begin") != 0) {
         status = mouse_message;
@@ -286,8 +292,7 @@ bool app_ui_init(lv_display_t *display)
     last_interaction = lv_tick_get();
     lv_timer_create(render, 125, NULL);
     render(NULL);
-    /* TEMP diagnostics (remove when the panel issue is closed): how much of the
-     * LVGL heap the UI actually needs. */
+    /* Boot-time diagnostic: how much of the LVGL heap the UI actually needs. */
     lv_mem_monitor_t mon;
     lv_mem_monitor(&mon);
     ESP_LOGI(TAG, "lvgl mem: total=%u free=%u max_used=%u biggest=%u frag=%u%%",

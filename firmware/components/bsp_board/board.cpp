@@ -54,22 +54,6 @@ extern "C" esp_err_t board_display_start(void)
     return ESP_OK;
 }
 
-/* TEMP display bisect (remove before delivery): panel only, no touch/LVGL. */
-extern "C" esp_err_t board_display_probe_start(void)
-{
-    if (s_display) {
-        return ESP_OK;
-    }
-    if (board_bus_init() != ESP_OK) {
-        return ESP_ERR_NO_MEM;
-    }
-    s_display = new DisplayPort(*s_bus, BSP_LCD_H_RES, BSP_LCD_V_RES,
-                                BSP_LCD_PCLK, BSP_LCD_DATA0, BSP_LCD_DATA1,
-                                BSP_LCD_DATA2, BSP_LCD_DATA3, BSP_LCD_CS,
-                                BSP_LCD_TOUCH_INT, BSP_LCD_TOUCH_RST, BSP_LCD_SPI_NUM);
-    return s_display ? ESP_OK : ESP_ERR_NO_MEM;
-}
-
 extern "C" esp_err_t board_audio_init(void)
 {
     if (s_codec) {
@@ -145,34 +129,3 @@ extern "C" esp_codec_dev_handle_t board_microphone(void)
     return s_codec ? s_codec->microphone() : NULL;
 }
 
-
-/* TEMP panel bisect (remove when the panel issue is closed): push a solid
- * colour straight to the panel with esp_lcd_panel_draw_bitmap so the SPI path
- * can be tested without LVGL involved at all. */
-extern "C" esp_err_t board_panel_fill(uint16_t color)
-{
-    if (!s_display) {
-        return ESP_ERR_INVALID_STATE;
-    }
-    static uint16_t strip[480 * 20];
-    for (int i = 0; i < 480 * 20; i++) {
-        strip[i] = color;
-    }
-    esp_lcd_panel_handle_t panel = s_display->Get_PanelHandle();
-    for (int y = 0; y < 480; y += 20) {
-        int64_t t0 = esp_timer_get_time();
-        esp_err_t err = esp_lcd_panel_draw_bitmap(panel, 0, y, 480, y + 20, strip);
-        int64_t dt = esp_timer_get_time() - t0;
-        ESP_LOGI("panel_direct", "draw rows %d-%d -> %s (%lld us)", y, y + 20,
-                 esp_err_to_name(err), (long long)dt);
-        if (err != ESP_OK) {
-            return err;
-        }
-    }
-    ESP_LOGI("panel_direct", "ALDO3 enabled=%d after write",
-             Axp2101_IsAldo3Enabled() ? 1 : 0);
-    vTaskDelay(pdMS_TO_TICKS(500));
-    ESP_LOGI("panel_direct", "panel write done, heap %u",
-             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
-    return ESP_OK;
-}
