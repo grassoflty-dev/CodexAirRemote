@@ -142,14 +142,14 @@ static void render(lv_timer_t *timer)
         lv_obj_add_state(b_button, LV_STATE_DISABLED);
     }
 
-    /* Start at full brightness and only dim when the panel has been idle for
-     * 25 s: a dark background at the idle level is easy to mistake for a dead
-     * panel (this cost a whole debugging session). */
+    /* Keep the panel bright: at the old idle level a dark UI reads as "dead".
+     * Full brightness while the user interacts, 60% once it has been idle for
+     * 25 s, and always full for the first 5 s after boot. */
     static uint32_t boot_tick;
     uint32_t now = lv_tick_get();
     if (boot_tick == 0) boot_tick = now;
     bool active = mouse_active || recording_mode || lv_tick_elaps(last_interaction) < 25000;
-    int requested = (now - boot_tick < 5000) ? 100 : (active ? 70 : 24);
+    int requested = (active || now - boot_tick < 5000) ? 100 : 60;
     if (requested != brightness && board_set_brightness(requested) == ESP_OK) brightness = requested;
 }
 
