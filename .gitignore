@@ -1,3 +1,29 @@
+# ============================================================
+# Codex Air Remote 仓库忽略规则
+#
+# 原则：只提交源码、脚本与文档。
+# 官方 SDK / IDE / 工具链（env/）、构建产物、本机敏感材料一律不入库；
+# 克隆后按 docs/development-environment.md 从官方源准备。
+# ============================================================
+
+# ---------- 环境目录：ESP-IDF / 工具链 / 便携 IDE（官方获取，不入库）----------
+# env/esp-idf          ESP-IDF v5.5.5 源码
+# env/espressif        EIM 安装根（tools/、dist/、python 环境）
+# env/eim_idf.json     本机路径相关配置（模板说明见 env/README.md）
+/env/
+
+# ---------- 固件构建产物与组件缓存 ----------
+/firmware/build/
+/firmware/managed_components/
+/firmware/sdkconfig
+/firmware/sdkconfig.old
+
+# 原 ESP32-S3 归档工程（不参与开发）
+/firmware_s3/build/
+/firmware_s3/managed_components/
+/firmware_s3/sdkconfig
+/firmware_s3/sdkconfig.old
+
 # ---------- Windows 辅助程序 ----------
 /windows/.venv/
 /windows/build/
@@ -6,21 +32,11 @@
 **/__pycache__/
 *.pyc
 
-# ---------- 固件（C6 工程 + S3 归档工程）构建产物 ----------
-/firmware/build/
-/firmware/managed_components/
-/firmware/sdkconfig
-/firmware/sdkconfig.old
-/firmware_s3/build/
-/firmware_s3/managed_components/
-/firmware_s3/sdkconfig
-/firmware_s3/sdkconfig.old
-
 # ---------- 本地工具与归档 ----------
 /tools/eim/
 /archive/
 
-# ---------- 本地生成 / 敏感材料 ----------
+# ---------- 本机生成的敏感材料（证书/密钥/固件备份/日志/录音）----------
 /.local/
 *.key
 *.pem
@@ -32,3 +48,9 @@
 *.map
 *.log
 *.wav
+
+# ---------- 编辑器与系统临时文件 ----------
+.vscode/ipch/
+.DS_Store
+Thumbs.db
+desktop.ini

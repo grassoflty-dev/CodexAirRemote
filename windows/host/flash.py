@@ -23,6 +23,10 @@ from app_runtime import APP, FROZEN, LOCAL, ROOT, launch_service, set_preference
 IMAGES = ROOT.parent / "firmware" / "build"
 FLASH_BYTES = 16 * 1024 * 1024
 USB_ID = (0x303A, 0x1001)
+# ESP32-C6 的原生 USB-Serial/JTAG 在 921600 波特率下读大块 Flash 偶发
+# "Corrupt data"，因此按优先级降速重试；备份再按 1 MB 分块，坏块可重读。
+BAUD_RATES = (921600, 460800, 230400, 115200)
+BACKUP_CHUNK = 512 * 1024
 
 
 def select_port(explicit=None):
@@ -57,8 +61,11 @@ def image_args():
     return args
 
 
-def esptool(port, *args, timeout=450, log=print):
-    arguments = ["--chip", "esp32c6", "--port", port, "--baud", "921600", *args]
+def esptool(port, *args, timeout=450, log=print, baud=BAUD_RATES[0]):
+    arguments = [
+        "--chip", "esp32c6", "--port", port, "--baud", str(baud),
+        "--connect-attempts", "3", *args,
+    ]
     with TemporaryDirectory(prefix="airremote-esptool-") as scratch:
         output_path = Path(scratch) / "output.txt"
         try:
@@ -82,8 +89,42 @@ def esptool(port, *args, timeout=450, log=print):
     return text
 
 
+def esptool_retry(port, *args, timeout=450, log=print, attempts=2):
+    """Run one esptool command, retrying at lower baud rates on failure."""
+    errors = []
+    for baud in BAUD_RATES:
+        for attempt in range(1, attempts + 1):
+            try:
+                return esptool(port, *args, timeout=timeout, log=log, baud=baud)
+            except (RuntimeError, OSError, subprocess.SubprocessError, TimeoutError) as exc:
+                errors.append(f"{baud} baud #{attempt}: {exc}")
+                log(f"esptool {args[0]} 在 {baud} 波特率失败，准备重试……")
+                time.sleep(0.4)
+    raise RuntimeError(f"烧录工具多次失败：{' | '.join(errors[-4:])}")
+
+
+def read_flash_chunk(port, offset, length, target, log):
+    """Read one aligned flash chunk, retrying and degrading baud until it is complete."""
+    errors = []
+    for baud in BAUD_RATES:
+        for attempt in range(1, 3):
+            target.unlink(missing_ok=True)
+            try:
+                esptool(port, "read-flash", hex(offset), hex(length), str(target),
+                        timeout=240, log=log, baud=baud)
+                size = target.stat().st_size if target.is_file() else 0
+                if size == length:
+                    return
+                errors.append(f"{baud} baud #{attempt}: 收到 {size} 字节，期望 {length}")
+            except (RuntimeError, OSError, subprocess.SubprocessError, TimeoutError) as exc:
+                errors.append(f"{baud} baud #{attempt}: {exc}")
+            target.unlink(missing_ok=True)
+            log(f"读取 0x{offset:x}（{baud} 波特率）失败，重试 {attempt}/2……")
+    raise RuntimeError(f"读取 Flash 0x{offset:x} 连续失败：{' | '.join(errors[-4:])}")
+
+
 def board_identity(port, log):
-    output = esptool(port, "flash-id", timeout=35, log=log)
+    output = esptool_retry(port, "flash-id", timeout=60, log=log)
     if not re.search(r"Detected flash size:\s*16\s*MB\b", output, re.I):
         raise RuntimeError("检测到的 Flash 不是 16 MB，请确认开发板型号。")
     identity = re.search(r"\bMAC:\s*([0-9a-f:]{17})\b", output, re.I)
@@ -104,15 +145,28 @@ def ensure_backup(port, identity, progress, log):
         if checksum.is_file() and checksum.read_text(encoding="ascii").strip() != digest:
             raise RuntimeError("原始备份校验不一致，已停止烧录。")
     else:
+        progress("正在备份原厂 Flash（分块读取，坏块自动降速重试）……")
         temp = image.with_suffix(".partial")
-        if temp.exists():
-            temp = image.with_name(f"{image.stem}-{time.time_ns()}.partial")
-        progress("正在备份原厂 Flash，可能需要几分钟……")
-        esptool(port, "read-flash", "0x0", hex(FLASH_BYTES), str(temp), log=log)
-        if temp.stat().st_size != FLASH_BYTES:
-            raise RuntimeError("Flash backup has an unexpected size")
-        digest = hashlib.sha256(temp.read_bytes()).hexdigest()
-        temp.rename(image)
+        temp.unlink(missing_ok=True)
+        try:
+            with temp.open("wb") as output:
+                for offset in range(0, FLASH_BYTES, BACKUP_CHUNK):
+                    length = min(BACKUP_CHUNK, FLASH_BYTES - offset)
+                    chunk = folder / f"{identity}-{offset:08x}.chunk"
+                    read_flash_chunk(port, offset, length, chunk, log)
+                    output.write(chunk.read_bytes())
+                    chunk.unlink(missing_ok=True)
+                    output.flush()
+                    done = offset + length
+                    progress(f"正在备份原厂 Flash：{done * 100 // FLASH_BYTES}%")
+            if temp.stat().st_size != FLASH_BYTES:
+                raise RuntimeError("Flash backup has an unexpected size")
+            digest = hashlib.sha256(temp.read_bytes()).hexdigest()
+            temp.rename(image)
+        finally:
+            for junk in folder.glob("*.chunk"):
+                junk.unlink(missing_ok=True)
+            temp.unlink(missing_ok=True)
     checksum.write_text(digest + "\n", encoding="ascii")
     log(f"Original flash backup verified: {image}")
 
@@ -254,7 +308,7 @@ def setup_board(port, wifi, provision_only, progress, log):
             if board_identity(port, log) != identity:
                 raise RuntimeError("备份后 USB 设备发生变化，已停止烧录。")
             progress("正在写入并校验固件，请保持 USB 连接……")
-            esptool(port, "write-flash", *images, log=log)
+            esptool_retry(port, "write-flash", *images, log=log, timeout=900)
             written = True
         progress("正在通过 USB 写入 Wi-Fi 配置……")
         try:

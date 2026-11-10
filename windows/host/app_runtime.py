@@ -18,6 +18,9 @@ PREFERENCES = LOCAL / "companion-settings.json"
 STATE = LOCAL / "companion-state.json"
 MUTEX_NAME = r"Local\CodexAirRemoteCompanion"
 
+VOICE_TARGETS = ("codex", "dsh")
+DEFAULT_VOICE_TARGET = "codex"
+
 kernel = ctypes.WinDLL("kernel32", use_last_error=True)
 kernel.CreateMutexW.argtypes = (ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR)
 kernel.CreateMutexW.restype = wintypes.HANDLE
@@ -76,7 +79,23 @@ def preferences():
 
 
 def set_preferences(enabled):
-    write_json(PREFERENCES, {"enabled": bool(enabled)})
+    """Enable/disable the companion service without clobbering other settings."""
+    settings = read_json(PREFERENCES)
+    settings["enabled"] = bool(enabled)
+    write_json(PREFERENCES, settings)
+
+
+def voice_target():
+    """Selected dictation target; anything unknown falls back to Codex."""
+    value = read_json(PREFERENCES).get("voice_target")
+    return value if value in VOICE_TARGETS else DEFAULT_VOICE_TARGET
+
+
+def set_voice_target(target):
+    """Persist the selected dictation target (invalid values reset to Codex)."""
+    settings = read_json(PREFERENCES)
+    settings["voice_target"] = target if target in VOICE_TARGETS else DEFAULT_VOICE_TARGET
+    write_json(PREFERENCES, settings)
 
 
 def provisioned():

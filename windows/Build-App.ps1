@@ -12,7 +12,7 @@ try {
         '--noconfirm', '--onedir', '--windowed', '--name', 'CodexAirRemote',
         '--distpath', "$staging\dist", '--workpath', "$staging\work", '--specpath', $staging,
         '--add-data', ((Join-Path $root 'host\hotspot.ps1') + ':.'), '--collect-all', 'esptool',
-        '--add-data', ((Join-Path $root 'host\dictation.ps1') + ':.'), '--add-data', ((Join-Path $root 'host\pair-mouse.ps1') + ':.'), 'host\desktop.py'
+        '--add-data', ((Join-Path $root 'host\dictation.ps1') + ':.'), '--add-data', ((Join-Path $root 'host\dsh_dictation.ps1') + ':.'), '--add-data', ((Join-Path $root 'host\pair-mouse.ps1') + ':.'), 'host\desktop.py'
     )
     foreach ($notice in @('LICENSE', 'NOTICE', 'THIRD_PARTY_NOTICES.md')) {
         $options += @('--add-data', ((Join-Path $shared $notice) + ':licenses'))

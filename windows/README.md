@@ -125,6 +125,38 @@ VS Code 选择 `windows` 根后可用：
 
 修改代码前先在界面里「停止服务」并关闭旧窗口；源码界面启动的服务使用源码，打包 EXE 使用包内代码，两者不会自动切换。
 
+## 语音目标（Codex / DSH）
+
+板端 Voice 录音可以接到两个目标之一，在「烧录开发板」窗口的「语音目标」里切换：
+
+| 目标 | 音频去向 | 识别由谁完成 | 结束语义 |
+| --- | --- | --- | --- |
+| `codex`（默认） | VB-CABLE → Codex 桌面听写 | Codex 桌面 | A 发送、B 取消，行为与旧版一致 |
+| `dsh`（实验） | VB-CABLE → DeepSeek Harness 语音输入 | DSH 本机 SenseVoice（ONNX） | 停止后文字进 DSH 草稿，**不自动发送** |
+
+- 选择写入 `windows\.local\companion-settings.json` 的 `voice_target`（`codex` / `dsh`），旧设置文件
+  可直接兼容；缺失或非法值一律按 `codex` 处理。
+- **热切换**：companion 在每次语音会话开始时重新读取设置，下一次 Voice 会话即生效，无需重启服务。
+- Codex 目标仍要求把目标 Codex 对话放在前台。
+
+### 首次使用 DSH 目标
+
+1. 打开 DeepSeek Harness（桌面版，`desktop` profile 已内置语音输入实验插件）。
+2. DSH → 插件 → 语音输入 → 准备模型（SenseVoiceSmall，本机 CPU；首次需下载，之后完全本地）。
+3. 在同一插件详情里把「输入设备」选为 **CABLE Output（VB-Audio Virtual Cable）**（只需一次，DSH 会记住）。
+4. 辅助程序里把「语音目标」切到 DeepSeek Harness；之后点开发板 Voice，DSH 会从 CABLE 收到板载音频。
+
+### 限制
+
+- DSH 语音输入是实验特性（插件 0.2.2-rc.1），DSH 升级后按钮文案/结构可能变化，需要复测。
+- 自动点击 DSH 的麦克风/停止按钮依赖 Chromium 无障碍：UIA 查询会按需激活无障碍树（本机实测可见 189 个按钮），
+  但**模型未准备**时语音按钮是「打开语音输入引导」，辅助程序会返回 `DSH_SETUP_REQUIRED` 提示先准备模型；
+  准备后若仍不可自动化，则进入**手动模式**：音频照常送入 CABLE，请在 DSH 里手动点「开始录音」，
+  说完点「停止并识别」，文字进入草稿后自行发送。若想排查自动点击，可用
+  `DeepSeek Harness.exe --force-renderer-accessibility` 启动 DSH 后复测。
+- DSH 只把识别结果写进草稿，不会自动发送；板端 A/B 在手动模式下不会点击 DSH。
+- 详细设计与调研见 [../docs/voice-targets.md](../docs/voice-targets.md)。
+
 ## 打包
 
 ```powershell
@@ -133,7 +165,7 @@ powershell -ExecutionPolicy Bypass -File .\Build-App.ps1
 ```
 
 - 入口 `host/desktop.py`，输出 `windows/app/CodexAirRemote.exe` 与 `windows/app/_internal`。
-- `host/hotspot.ps1`、`host/dictation.ps1`、`host/pair-mouse.ps1` 以数据文件形式打进包内。
+- `host/hotspot.ps1`、`host/dictation.ps1`、`host/dsh_dictation.ps1`、`host/pair-mouse.ps1` 以数据文件形式打进包内。
 - 根目录的 `LICENSE`、`NOTICE`、`THIRD_PARTY_NOTICES.md` 和 `LICENSES/GPL-3.0.txt` 会放到包内 `licenses`。
 - 中间产物在 `windows/build/pyinstaller`；旧的 `app` 会先移到 `build/pyinstaller/previous-*` 再替换，失败时自动回滚。
 - 打包前关闭正在运行的 EXE 并停止服务，否则 Windows 会占用 `app/_internal` 中的文件。
@@ -150,8 +182,10 @@ cd windows
 .\Flash.cmd --check
 ```
 
-- `tests/`：验证配对材料唯一、可复用、不覆盖残缺文件、证书与私钥不匹配时拒绝。
-- `offline_check.py`：用模拟板端校验证书链、TLS WebSocket、帧序号、发送/草稿/取消、旧协议、虚拟声卡缺失、回执丢失等路径，不需要开发板。
+- `tests/`：配对材料唯一/可复用/证书私钥匹配；`test_voice_target.py` 覆盖语音目标设置持久化、
+  默认/非法值回退 Codex、Codex/DSH 目标选择、DSH 手动回退与模型未准备异常。
+- `offline_check.py`：用模拟板端校验证书链、TLS WebSocket、帧序号、Codex 目标的发送/草稿/取消/旧协议、
+  DSH 目标的草稿/取消/手动模式/未准备模型、虚拟声卡缺失、回执丢失等路径，不需要开发板或应用安装。
 - `--check-codex`：调用已登录 Codex 的 app-server，读取账号状态，不发送提示词。
 - `.\Flash.cmd --check`：校验四个固件文件与 `airremote-release.json` 的 SHA-256 一致，并检查 Windows 热点能力，不写开发板。
 
@@ -199,11 +233,11 @@ cd windows
 
 | 项目 | 值 |
 | --- | --- |
-| 发现 | UDP `47682`；Windows 广播 `AR1?` + 16 字节随机数，板端回复 `AR1!` + 同一随机数 |
-| 音频通道 | WSS `wss://<板端 IP>:47683/voice`，SNI `airremote.local`，TLS ≥ 1.2 |
+| 发现 | UDP `47682`，双向：Windows 绑定 `0.0.0.0:47682` 并广播 `AR1?` + 16 字节随机数；板端在等待客户端期间每约 500 ms 向网关单播 `AR1A` + 6 字节 STA MAC（Windows 移动热点不转发主机广播），同时保留广播应答 `AR1!` + 同一随机数作为普通 AP 环境的后备。Windows 收到任一即连接 |
+| 音频通道 | WSS `wss://<板端 IP>:47683/voice`，SNI `airremote.local`，TLS 固定 1.2（板端只开 TLS 1.2，客户端不锁定会因默认 TLS 1.3 ClientHello 被拒） |
 | 认证 | 首帧文本 `AUTH <64 位 hex 配对令牌>`；板端回 `READY2`（旧固件为 `READY`） |
 | 录音启动 | `CAPTURE` → `GO`（仅 `READY2`；旧协议直接拉流） |
-| 拉流 | Windows 发 `PULL`，板端回二进制帧：4 字节大端序号 + 640 字节的整数倍单声道 PCM（1–5 帧/次），或 `WAIT` |
+| 拉流 | Windows 发 `PULL`，板端回二进制帧：4 字节大端序号 + 640 字节的整数倍单声道 PCM（1–2 帧/次），或 `WAIT` |
 | 结束 | 板端在 `PULL` 响应中发 `SEND`、`DRAFT` 或 `CANCEL` |
 | 回执 | Windows 发 `SUBMITTED`、`DRAFTED`、`CANCELLED`、`SAVED`、`EMPTY`、`FAILED` 或 `ABORT`，板端回 `ACK` |
 | 音频格式 | 16 kHz、单声道、16 bit PCM，640 字节 = 20 ms；单次录音上限 60 秒 |
@@ -228,6 +262,8 @@ Windows 侧会校验序号连续、帧长在 644–3204 字节之间且 `(长度
 | 热点模式报已有 Windows 热点在运行 | 首次使用前先关闭系统里现有的移动热点；配网成功后服务会接管维持 |
 | 热点启动失败 | 确认无线网卡支持 2.4 GHz 移动热点、电脑有可共享的上网连接，并查看 `companion.log` |
 | 固件已写入但配网失败 | 保留 USB 连接，重新运行「只重新配网」；不要重复擦写 |
+| 蓝牙配对失败 / 搜不到 Codex Air Remote | 板端串口应出现 `BLE HID started` 与 `BLE advertising started`；缺失说明固件 BLE 广播未启动（GATTS 回调未注册或广播配置失败）。板子在语音会话期间会释放 BLE，此时搜不到属正常 |
+| 光标不动或卡键 | 板端先确认 `BLE host connected`、屏幕显示 `Mouse active`；Windows 侧可用 `firmware/build/mouse_probe.py` 观察光标与按键 |
 | 界面提示没有检测到 VB-CABLE | 安装 VB-CABLE 后重启音频服务；CABLE Output 必须存在且为默认输入 |
 | 提示请将 CABLE Output 设为默认麦克风 | 在 Windows 声音设置中修改默认输入设备，然后重试 |
 | 听写未就绪 / 找不到按钮 | 把目标 Codex 对话放到前台并确保只有一个「听写」按钮；Codex 需已登录 |
@@ -239,3 +275,8 @@ Windows 侧会校验序号连续、帧长在 644–3204 字节之间且 `(长度
 - `windows/.local` 含私钥、配对令牌、Wi-Fi 配置、原始 Flash 备份和日志，已列入 `.gitignore`；不要提交或发给他人。
 - 打包进 EXE 的 `esptool` 为 GPL-2.0-or-later；对外分发组合 EXE 时按 GPL 要求随附许可证与对应源码。详见根目录 [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md)。
 - 辅助程序不包含 Codex 程序、模型或账号凭据，也不绕过 Codex 的界面权限；它只操作已登录桌面应用暴露的听写控件。
+
+## 开发环境与官方来源
+
+Python 3.12、VB-CABLE、Codex 桌面版等 Windows 侧依赖的官方下载链接见
+[`../docs/development-environment.md`](../docs/development-environment.md)。

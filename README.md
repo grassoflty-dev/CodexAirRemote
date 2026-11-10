@@ -1,13 +1,17 @@
 # Codex Air Remote
 
-Codex Air Remote 把一块带触摸屏的 ESP32 开发板变成 Codex 的无线输入设备：板载麦克风把语音送到 Windows，再由 Codex 桌面听写转成文字；切到陀螺仪模式后，开发板又变成一只蓝牙空中鼠标。仓库包含两个可以独立构建、运行时互相配合的软件：
+Codex Air Remote 把一块带触摸屏的 ESP32 开发板变成 Codex 的无线输入设备：板载麦克风把语音送到 Windows，再由 **Codex 桌面听写**（默认）或 **DeepSeek Harness 语音输入**（实验，可在辅助程序内切换）转成文字；切到陀螺仪模式后，开发板又变成一只蓝牙空中鼠标。仓库包含两个可以独立构建、运行时互相配合的软件：
 
-- **Windows 辅助程序**（`windows/`）：Tkinter 图形界面、USB 烧录与 Wi-Fi 配网、VB-CABLE 虚拟麦克风音频路由、Codex 桌面听写控制、Windows 2.4 GHz 热点、蓝牙鼠标配对。
+- **Windows 辅助程序**（`windows/`）：Tkinter 图形界面、USB 烧录与 Wi-Fi 配网、VB-CABLE 虚拟麦克风音频路由、可切换语音目标（Codex / DeepSeek Harness）、Windows 2.4 GHz 热点、蓝牙鼠标配对。
 - **ESP32-C6 固件**（`firmware/`）：面向微雪 ESP32-C6-Touch-AMOLED-2.16 的触屏界面、蓝牙 HID 鼠标、Wi-Fi/HTTPS/WebSocket 语音链路、USB Serial/JTAG 配网。
 
-`firmware_s3/` 是迁移前的 ESP32-S3-Touch-AMOLED-1.8 工程，只作归档保留，不再参与构建。C6 版本尚未接开发板做实机验收，迁移前的本机验证记录见 [TEST_REPORT.md](TEST_REPORT.md)。
+`firmware_s3/` 是迁移前的 ESP32-S3-Touch-AMOLED-1.8 工程，只作归档保留，不再参与构建。C6 版本已在实机上验证到启动、显示/触摸、语音握手与音频帧，鼠标/按键与完整语音 E2E 的待实测项见 [`docs/pending-hardware-validation.md`](docs/pending-hardware-validation.md)；迁移前的本机验证记录见 [TEST_REPORT.md](TEST_REPORT.md)。
 
 这是独立的社区源码项目，不隶属于 OpenAI、乐鑫或微雪。仓库只提供源码、脚本和文档，不包含预编译固件、EXE、模型、驱动或任何本机密钥。
+
+> **换电脑继续开发？** 先读 [项目总结与换电脑继续开发指南](docs/project-summary-and-usage.md)
+> （项目现状、env/ 迁移、重新配网/BLE 配对、首次跑通流程）；环境版本与官方下载链接见
+> [开发环境与官方来源](docs/development-environment.md)。
 
 ## 硬件
 
@@ -180,14 +184,17 @@ powershell -ExecutionPolicy Bypass -File .\firmware\Build.ps1
 
 屏幕上有 **Voice、Gyro、A、B** 四个触摸图标，两种模式互斥。
 
-- **Voice**：点 Voice 开始录音，等板上显示 `Recording` 后对着开发板说话。点 **A** 请求 Codex 转录并发送，点 **B** 取消本次听写。A 在录音就绪后启用；B 在连接电脑阶段也可取消。录音满 60 秒未点 A 会自动取消。显示 `Codex send requested` 表示已触发桌面按钮，发送结果在 Codex 中查看。
+- **Voice**：点 Voice 开始录音，等板上显示 `Recording` 后对着开发板说话。默认目标是 Codex 桌面听写（点 **A** 请求转录并发送，点 **B** 取消听写）；也可在「烧录开发板」窗口把语音目标切到 **DeepSeek Harness 语音输入**（停止后文字进入 DSH 草稿，由你在 DSH 中发送）。A 在录音就绪后启用；B 在连接电脑阶段也可取消。录音满 60 秒未点 A 会自动取消。显示 `Codex send requested` 表示已触发目标应用按钮，最终结果请到对应应用中查看。
 - **Gyro**：点 Gyro 开启陀螺仪鼠标，握住设备静止约一秒完成校准，再转动手腕移动光标。**A** 是鼠标左键（轻点单击、连续轻点双击、按住拖拽并在松手时释放），**B** 是鼠标右键。再次点 Gyro 关闭。
 
 鼠标通过蓝牙直接连接 Windows；语音通过加密的 Wi-Fi 连接把板载录音送到电脑。屏幕顶部显示 BLE 连接状态与 AXP2101 电量；25 秒无操作后自动降低亮度，触摸后恢复。
 
 ### 语音链路
 
-辅助程序把板端 PCM 只送到 **CABLE Input**，并检查 **CABLE Output** 是否为 Windows 默认录音设备。开始前把目标 Codex 对话放在前台；辅助程序按控件名称操作该对话的听写按钮。第一次使用听写时，如 Codex 弹出麦克风权限提示，请在 Codex 中处理。
+辅助程序把板端 PCM 只送到 **CABLE Input**，并检查 **CABLE Output** 是否为 Windows 默认录音设备。语音目标可在辅助程序里切换：
+
+- **Codex（默认）**：开始前把目标 Codex 对话放在前台；辅助程序按控件名称操作该对话的听写按钮。第一次使用听写时，如 Codex 弹出麦克风权限提示，请在 Codex 中处理。
+- **DeepSeek Harness（实验）**：DSH 桌面版启用内置的「录音输入」插件、准备好本机 SenseVoice 模型，并在插件详情把输入设备选为 **CABLE Output**；DSH 从 CABLE 读取板载音频并自行转写。识别结果进入会话草稿，不自动发送。详见 [docs/voice-targets.md](docs/voice-targets.md)。
 
 ### 网络
 
@@ -250,8 +257,10 @@ cd windows
 | `windows/host/desktop.py` | 主窗口与程序入口 |
 | `windows/host/setup_dialog.py` | 烧录配网对话框 |
 | `windows/host/flash.py` | 识别设备、备份、写入、USB 配网、启动服务 |
-| `windows/host/companion.py` | 发现设备、TLS WebSocket 音频服务、结束动作 |
+| `windows/host/companion.py` | 发现设备、TLS WebSocket 音频服务、按语音目标路由结束动作 |
+| `windows/host/voice_target.py` | 语音目标抽象与选择（Codex / DeepSeek Harness） |
 | `windows/host/dictation.py`、`dictation.ps1` | 调用 Codex 桌面听写控件 |
+| `windows/host/dsh_dictation.py`、`dsh_dictation.ps1` | 调用 DeepSeek Harness 语音输入控件（实验） |
 | `windows/host/virtual_mic.py` | 把 PCM 写入 VB-CABLE 并做 16 kHz → 48 kHz 转换 |
 | `windows/host/hotspot.py`、`hotspot.ps1` | Windows 2.4 GHz 移动热点 |
 | `firmware/main/app_main.c` | 板端 UI 与主逻辑 |
@@ -269,8 +278,12 @@ cd windows
 
 ## 迁移与验证状态
 
-- **已验证**：`firmware/Build.ps1` 在 ESP-IDF 5.5.5 + ESP32-C6 下编译通过，生成 4 个镜像（应用约 2.3 MB，8 MB 应用分区占用约 28%）与 `airremote-release.json`；`windows/Flash.cmd --check` 通过（四镜像 SHA-256 与清单一致，Windows 热点能力可用）；Windows 侧单元测试与 `offline_check.py` 协议检查通过；`Build-App.ps1` 可重新打包 EXE。
-- **未验证**：C6 固件的触摸方向、麦克风通道、亮度命令、无 PSRAM 内存余量、BLE 配对与实机烧录仍需接开发板确认。
+- **已验证**：`firmware/Build.ps1` 在 ESP-IDF 5.5.5 + ESP32-C6 下编译干净（0 error / 0 warning，应用约 2.3 MB，8 MB 应用分区占用约 28%）并生成 4 镜像与 `airremote-release.json`；实机烧录后 `AR1 READY 7`、显示/触摸/PMU/音频/IMU 正常；语音链路实测到 `UDP 发现 → TLS 1.2 → WebSocket → AUTH/READY2 → CAPTURE/GO → 麦克风 PCM 帧`；`windows/Flash.cmd --check` 通过；Windows 侧单元测试（14/14）与 `offline_check.py` 双目标协议检查通过；`Build-App.ps1` 可重新打包 EXE。
+- **2026-11-09 修复（待实机复核）**：BLE HID 因缺少 `esp_ble_gatts_register_callback(esp_hidd_gatts_event_handler)` 而从不广播（Windows 搜不到设备）——已修复；同步加固 BLE release/resume 幂等、A/B 按键防卡键对账、鼠标失败复位；语音会话期间关闭 Wi-Fi modem sleep 以修复 `PULL` 往返延迟导致的 PCM 缓冲溢出；发现改为板端单播 `AR1A` + PC 端 47682 监听。
+- **2026-11-09 新增语音目标切换（待实机复核）**：辅助程序内可切换 `codex` / `dsh`（热切换），DSH 侧复用 VB-CABLE 作为其麦克风、由 DSH 本机 SenseVoice 转写；Codex 路径保持原样，非法/缺失配置回退 Codex。设计与限制见 [docs/voice-targets.md](docs/voice-targets.md)。
+- **仍待实测**：触摸方向、麦克风通道、亮度命令、无 PSRAM 内存余量、BLE 配对与鼠标/按键手感、语音完整 E2E；
+  Codex 听写保持原流程实测，DSH 目标还需在 DSH 中准备 SenseVoice 模型、选择 CABLE Output 后验证（自动点击/手动回退两种路径）。
+  逐项步骤、期望日志与 Windows 侧观察点见 [docs/pending-hardware-validation.md](docs/pending-hardware-validation.md)。
 - ESP32-S3 → ESP32-C6 的改动、引脚表、镜像地址约定和未实机验证的风险点，见 [docs/firmware-c6-migration.md](docs/firmware-c6-migration.md)。
 - [TEST_REPORT.md](TEST_REPORT.md) 是迁移前（ESP32-S3 时代）的本机验证记录，其中本地语音识别等章节对应已移除的功能，不代表当前 C6 版本的状态。
 
@@ -280,5 +293,13 @@ cd windows
 - [firmware/README.md](firmware/README.md)：C6 固件的构建、分区、串口配网与语音链路。
 - [docs/components.md](docs/components.md)：全局组件、项目组件与托管组件的完整清单。
 - [docs/firmware-c6-migration.md](docs/firmware-c6-migration.md)：S3 → C6 迁移说明。
+- [docs/pending-hardware-validation.md](docs/pending-hardware-validation.md)：接板验收的待实测清单（步骤、期望日志、Windows 侧观察点）。
+- [docs/voice-targets.md](docs/voice-targets.md)：语音目标（Codex / DeepSeek Harness）架构、DSH 调研结论与限制。
 
 本仓库自有源码采用 [Apache License 2.0](LICENSE)。第三方 SDK、组件和打包工具保留各自许可，见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。其中 esptool（GPL-2.0-or-later）会被打包进辅助程序；对外分发组合 EXE 时须遵守相应 GPL 要求。公开源码仓库不包含该 EXE 或设备密钥。
+
+## 开发环境与官方来源
+
+ESP-IDF、工具链、受管组件、Python 依赖等均可从官方获取，**不入库**；克隆后如何准备见
+[`docs/development-environment.md`](docs/development-environment.md)（含 ESP-IDF v5.5.5、EIM、VS Code 扩展、
+managed components、Python 3.12、VB-CABLE 等官方链接）。

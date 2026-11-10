@@ -122,6 +122,11 @@ CONFIG_BT_BLE_50_FEATURES_SUPPORTED=n
 - HID 设备名 `Codex Air Remote`，VID/PID `0x02E5/0xA180`，HID 服务 UUID `0x1812`，扫描响应携带设备名。
 - 配对使用 LE Secure Connections + bonding，IO capability `NoInputNoOutput`；断开后重新广播，重连后由 `ble_mouse_generation()` 通知鼠标任务复位按键与位移。
 - BLE 关闭 5.0 后代码不再引用扩展广播结构，迁移时不要打开 `CONFIG_BT_BLE_50_FEATURES_SUPPORTED`，否则需要同步改写广播代码。
+- **必须显式注册 GATTS 回调**：`esp_hid` 的 BLE 传输层不会调用 `esp_ble_gatts_register_callback()`，官方 `esp_hid_device` 示例在应用层注册
+  （`esp_ble_gatts_register_callback(esp_hidd_gatts_event_handler)`）。缺少这一步时 GATTS 建表事件全部丢失，`ESP_HIDD_START_EVENT`
+  永不触发，板子不会广播；2026-11-09 前的 C6 构建即因此无法被 Windows 发现（现象：`AR1 READY 7` 正常但蓝牙搜不到，启动日志没有 `BLE HID started`）。
+- 正常启动日志：`BLE HID started` → `BLE advertising started`；配对/连接/断开：`BLE pairing complete`、`BLE host connected`、
+  `BLE host disconnected`。另有 1 s 兜底定时器，START 事件丢失时会打印 `HID start event missing, advertising anyway` 并强制广播。
 
 ## 7. 构建系统
 
@@ -221,7 +226,8 @@ CONFIG_BT_BLE_50_FEATURES_SUPPORTED=n
 | 无 PSRAM 内存余量 | 48 KB 流缓冲 + 38 KB 绘制缓冲 + 32 KB LVGL 堆 + 栈全部在内部 RAM | 启动日志看空闲堆；连续录音 60 秒、同时操作界面；记录最低余量 | 降低缓冲/字体/栈；减少同时驻留的组件 |
 | 显示复位时序 | 依赖 AXP2101 ALDO3 三次 100 ms 切换 | 冷启动、复位后观察是否稳定点亮 | 调整延时或复位顺序 |
 | 单核实时性 | 录音（优先级 7）、LVGL（8）、鼠标（7）与 Wi-Fi/BLE 共存 | 语音录音时观察 UI 是否卡顿、鼠标是否断报 | 调整任务优先级、降低刷新率 |
-| BLE 重连与配对 | Windows 侧自动配对 + 板端重新广播，未实机验证 | 断开/重连、重启 Windows 蓝牙、删除设备后重配 | 调整安全参数/广播间隔 |
+| BLE 重连与配对 | 根因（缺 GATTS 回调注册导致从不广播）已于 2026-11-09 修复；断开重连、删除设备后重配仍待实测 | 启动日志出现 `BLE HID started`/`BLE advertising started`；Windows 能搜到并配对；断开/重连、重启 Windows 蓝牙、删除设备后重配 | 调整安全参数/广播间隔 |
+| 语音 PULL 延迟 | 会话期间 `esp_wifi_set_ps(WIFI_PS_NONE)` 已代码修复（此前 modem sleep 的 DTIM 唤醒把 PULL 往返拖到 >300 ms，16 KB PCM 缓冲约 0.5 s 即溢出） | `e2e_test.py` 连续拉帧、无 `PCM buffer full`；串口出现多条 `ws msg 'PULL'`/`sent ... bytes` | 如仍不足，增大 `BUFFER_BYTES` 或每帧批大小 |
 | USB 配网与日志复用 | 日志与 `AR1?`/`AR1W` 共用 USB Serial/JTAG | 烧录后立即发送 `AR1?`，确认不被日志淹没 | 必要时在配网窗口临时降低日志级别 |
 | 电池与充电 | AXP2101 配置沿用板级参考值 | 插拔电池、观察电量与充电状态 | 调整充电电流/终止电压 |
 
@@ -231,10 +237,11 @@ CONFIG_BT_BLE_50_FEATURES_SUPPORTED=n
 2. `windows\Flash.cmd --check` 通过；完整烧录能完成备份、写入、配网和蓝牙配对。
 3. 串口日志出现 `Flash ... bytes; internal heap ... bytes free` 与 `AIRREMOTE UI READY; IMU=1 BLE=1 VOICE=1 PMIC=?`。
 4. 屏幕点亮、方向正确，四个按钮位置与触摸命中一致，电量显示合理。
-5. BLE 能被 Windows 搜到并配对；Gyro 校准后光标可移动，A/B 左右键与拖拽正常。
-6. 热点模式与局域网模式各完成一次 Voice 录音，Codex 能收到文字；A 发送、B 取消、60 秒上限均生效。
+5. BLE 能被 Windows 搜到并配对（启动日志有 `BLE HID started` + `BLE advertising started`）；Gyro 校准后光标可移动、静止不漂移，A/B 左右键与拖拽正常。
+6. 热点模式与局域网模式各完成一次 Voice 录音，Codex 能收到文字；A 发送、B 取消、60 秒上限均生效；E2E 过程中无 `PCM buffer full`。
 7. 连续录音/待机 10 分钟后检查空闲堆、是否重启、是否断流。
 8. 亮度在活动与空闲两档可辨识，无闪烁。
+9. 完整步骤与期望日志见 [pending-hardware-validation.md](pending-hardware-validation.md)。
 
 ## 相关文件
 

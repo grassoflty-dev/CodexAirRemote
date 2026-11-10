@@ -9,15 +9,15 @@ from virtual_mic import audio_check
 
 from app_runtime import (
     LOCAL, STATE, launch_service, preferences, provisioned, read_json,
-    service_running, set_preferences, write_json,
+    service_running, set_preferences, voice_target, write_json,
 )
 
 PHASES = {
     "loading": "正在启动服务",
     "listening": "等待设备录音",
     "connecting": "正在连接设备",
-    "receiving": "正在连接 Codex 听写或接收录音",
-    "finishing": "正在结束 Codex 听写",
+    "receiving": "正在连接语音目标或接收录音",
+    "finishing": "正在结束听写",
     "network_error": "热点启动失败",
     "stopping": "正在结束当前任务",
 }
@@ -27,12 +27,15 @@ RESULTS = {
     "EMPTY": "录音太短或没有音频",
     "FAILED": "听写失败，查看运行日志",
     "CANCELLED": "本次听写已取消",
-    "DRAFTED": "已触发保留草稿，请在 Codex 查看",
+    "DRAFTED": "已生成草稿或已触发保留草稿，请在目标应用中查看",
     "SUBMITTED": "已触发转录并发送，请在 Codex 查看",
     "CABLE_MISSING": "没有检测到 VB-CABLE",
     "CABLE_NOT_DEFAULT": "请将 CABLE Output 设为默认麦克风",
     "DICTATION_UNAVAILABLE": "听写未就绪，请将目标 Codex 窗口放在前台",
-    "DICTATION_UNCONFIRMED": "操作结果未确认，请在 Codex 查看",
+    "DICTATION_UNCONFIRMED": "操作结果未确认，请在目标应用查看",
+    "DSH_UNAVAILABLE": "DSH 语音输入不可用，查看运行日志",
+    "DSH_SETUP_REQUIRED": "DSH 语音输入尚未准备：请先在 DSH 插件详情下载 SenseVoice 模型",
+    "DSH_MANUAL": "DSH 手动录音模式：文字在草稿中，请自行停止录音并发送",
     "CONNECTION_ERROR": "设备连接中断",
 }
 
@@ -111,9 +114,11 @@ def open_window():
 
     voice = ttk.Frame(body, padding=(19, 12), style="Paper.TFrame")
     voice.pack(fill="x", pady=(12, 0))
-    ttk.Label(voice, text="Codex 桌面听写", style="Paper.TLabel",
+    target_status = tk.StringVar()
+    ttk.Label(voice, textvariable=target_status, style="Paper.TLabel",
               font=("Microsoft YaHei UI", 11, "bold")).pack(anchor="w")
-    ttk.Label(voice, text="板载麦克风通过 VB-CABLE 接入 Codex。开始前请将目标 Codex 对话放在前台。",
+    ttk.Label(voice, text="板载麦克风经 VB-CABLE 送给当前语音目标；在「烧录开发板」窗口里切换并立即生效。"
+                          "Codex 需把目标对话放前台；DSH 需在语音插件详情把输入设备选为 CABLE Output。",
               style="Muted.TLabel", wraplength=560).pack(anchor="w", pady=(4, 0))
     audio_status = tk.StringVar()
     ttk.Label(voice, textvariable=audio_status, style="Muted.TLabel").pack(anchor="w", pady=(4, 0))
@@ -182,6 +187,8 @@ def open_window():
         ready = mode in {"lan", "hotspot"}
         network = {"lan": "同一局域网", "hotspot": "Windows 2.4 GHz 热点"}.get(mode, "待配网")
         network_status.set(f"鼠标 · 蓝牙    麦克风 · {network}")
+        target_status.set("语音目标 · " + ("DeepSeek Harness 语音输入（实验）"
+                                           if voice_target() == "dsh" else "Codex 桌面听写"))
         state = read_json(STATE)
         current = state.get("phase")
         last_result.set("最近一次设备语音状态  ·  " + RESULTS.get(state.get("last"), "暂无记录"))

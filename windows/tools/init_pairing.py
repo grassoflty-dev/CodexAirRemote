@@ -7,7 +7,7 @@ import tempfile
 
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
 
@@ -31,7 +31,9 @@ def initialize(folder):
         return False
 
     folder.mkdir(parents=True, exist_ok=True)
-    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    # ECDSA P-256: much faster and lighter than RSA-2048 on the ESP32-C6,
+    # whose TLS handshake has to fit inside 512 KiB of SRAM.
+    key = ec.generate_private_key(ec.SECP256R1())
     name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "airremote.local")])
     now = datetime.now(timezone.utc)
     cert = (
@@ -43,7 +45,7 @@ def initialize(folder):
         .add_extension(x509.SubjectAlternativeName([x509.DNSName("airremote.local")]), critical=False)
         .add_extension(x509.BasicConstraints(ca=True, path_length=0), critical=True)
         .add_extension(x509.KeyUsage(digital_signature=True, content_commitment=False,
-                                    key_encipherment=True, data_encipherment=False,
+                                    key_encipherment=False, data_encipherment=False,
                                     key_agreement=False, key_cert_sign=True, crl_sign=True,
                                     encipher_only=False, decipher_only=False), critical=True)
         .add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]), critical=False)

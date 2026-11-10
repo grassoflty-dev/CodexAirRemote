@@ -7,7 +7,7 @@ from threading import Thread
 import tkinter as tk
 from tkinter import messagebox, ttk
 
-from app_runtime import LOCAL, read_json
+from app_runtime import LOCAL, read_json, set_voice_target, voice_target
 from flash import run_setup, validate_wifi
 
 
@@ -55,6 +55,25 @@ class SetupDialog:
         self.progress = ttk.Progressbar(content, mode="indeterminate")
         self.progress.pack(fill="x")
 
+        target = ttk.Frame(content)
+        target.pack(fill="x", pady=(12, 0))
+        ttk.Label(target, text="语音目标（板端 Voice 按钮接到哪里）",
+                  font=("Microsoft YaHei UI", 10, "bold")).pack(anchor="w")
+        self.voice_target = tk.StringVar(value=voice_target())
+        self.target_radios = (
+            ttk.Radiobutton(target, text="Codex 桌面听写（默认）", value="codex",
+                            variable=self.voice_target, command=self.save_target),
+            ttk.Radiobutton(target, text="DeepSeek Harness 语音输入（实验）", value="dsh",
+                            variable=self.voice_target, command=self.save_target),
+        )
+        for radio in self.target_radios:
+            radio.pack(anchor="w")
+        self.target_hint = ttk.Label(target, text="", wraplength=520)
+        self.target_hint.pack(anchor="w", pady=(4, 0))
+        ttk.Label(target, text="设置立即保存，下一次语音会话生效（无需重启服务）。",
+                  foreground="#506476").pack(anchor="w", pady=(4, 0))
+        self.refresh_target_hint()
+
         actions = ttk.Frame(content)
         actions.pack(fill="x", pady=(14, 0))
         self.flash = ttk.Button(actions, text="开始烧录", style="Accent.TButton",
@@ -70,6 +89,23 @@ class SetupDialog:
         for entry in self.entries:
             entry.configure(state="normal" if editable else "disabled")
 
+    def refresh_target_hint(self):
+        if self.voice_target.get() == "dsh":
+            hint = ("音频经 VB-CABLE 作为 DeepSeek Harness 的麦克风：DSH 需在插件里启用「录音输入」、"
+                    "准备好 SenseVoice 模型，并在语音插件详情把“输入设备”选为 CABLE Output。"
+                    "若辅助程序无法自动点击 DSH 麦克风，请手动点“开始录音”，说完再点“停止并识别”；"
+                    "识别结果进入 DSH 草稿，需要你自行发送。")
+        else:
+            hint = ("音频经 VB-CABLE 送入 Codex 听写；开始前把目标 Codex 对话放在前台，"
+                    "A 发送、B 取消。")
+        self.target_hint.configure(text=hint)
+
+    def save_target(self):
+        set_voice_target(self.voice_target.get())
+        self.refresh_target_hint()
+        name = "DeepSeek Harness 语音输入" if self.voice_target.get() == "dsh" else "Codex 桌面听写"
+        self.status.set(f"语音目标已切换为：{name}（下一次语音会话生效）。")
+
     def start(self, provision_only):
         if self.busy:
             return
@@ -83,7 +119,7 @@ class SetupDialog:
 
         self.busy = True
         self.status.set("正在准备，请保持 USB 连接……")
-        for widget in (*self.radios, self.flash, self.provision):
+        for widget in (*self.radios, *self.target_radios, self.flash, self.provision):
             widget.configure(state="disabled")
         self.update_fields()
         self.progress.start(16)
@@ -114,7 +150,7 @@ class SetupDialog:
                 continue
             self.busy = False
             self.progress.stop()
-            for widget in (*self.radios, self.flash, self.provision):
+            for widget in (*self.radios, *self.target_radios, self.flash, self.provision):
                 widget.configure(state="normal")
             if kind == "done":
                 self.password.set("")
