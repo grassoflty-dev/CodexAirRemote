@@ -92,6 +92,15 @@ void Custom_PmicRegisterInit(void) {
     axp2101.setChargerConstantCurr(XPOWERS_AXP2101_CHG_CUR_500MA);
     axp2101.setChargerTerminationCurr(XPOWERS_AXP2101_CHG_ITERM_50MA);
 
+    /* Power key: hold ~4 s to power the board off, matching the vendor
+     * ESP-IDF example (XiaoZhi-v2.2.5 main/boards/waveshare/
+     * esp32-c6-touch-amoled-2.16/esp32-c6-touch-amoled-2.16.cc: Pmic ctor,
+     * WriteReg(0x22, 0b110) and WriteReg(0x27, 0x10)). */
+    axp2101.writeRegister(0x22, 0x06); /* PWRON > OFFLEVEL as POWEROFF source enable */
+    axp2101.writeRegister(0x27, 0x10); /* hold 4 s to power off */
+    ESP_LOGI(TAG, "PWRKEY long-press power-off enabled (0x22=%d 0x27=%d)",
+             axp2101.readRegister(0x22), axp2101.readRegister(0x27));
+
     ESP_LOGI(TAG, "rails: DC1=%d ALDO1=%d ALDO2=%d ALDO3=%d ALDO4=%d",
              axp2101.isEnableDC1(), axp2101.isEnableALDO1(), axp2101.isEnableALDO2(),
              axp2101.isEnableALDO3(), axp2101.isEnableALDO4());
