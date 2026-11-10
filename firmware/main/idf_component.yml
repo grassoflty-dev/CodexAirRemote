@@ -1,9 +1,9 @@
-## ESP-IDF Component Manager manifest.
+﻿## ESP-IDF Component Manager manifest.
 ## ESP32-C6-Touch-AMOLED-2.16 display/touch/IMU/codec drivers.
 dependencies:
   idf: ">=5.5"
   lvgl/lvgl: "^9.5.0"
-  espressif/esp_lcd_sh8601: "^2.0.1"
+  espressif/esp_lcd_sh8601: "1.0.0"
   waveshare/esp_lcd_touch_cst9217: "^1.0.4"
   espressif/esp_lvgl_adapter: "~0.3.0"
   waveshare/qmi8658: "^2.0.0"

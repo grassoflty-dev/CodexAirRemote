@@ -1,4 +1,4 @@
-#include "ble_mouse.h"
+﻿#include "ble_mouse.h"
 
 #include <stdatomic.h>
 #include "esp_bt.h"
@@ -52,6 +52,12 @@ static esp_ble_adv_params_t adv_params = {
 };
 
 static atomic_bool hid_started, advertising, releasing;
+/* The controller can answer the advertising-enable HCI command with "memory
+ * full" right after the HID service is created. Retrying with a short backoff
+ * recovers from that transient failure; success is only reported when the
+ * completion event says so. */
+static esp_timer_handle_t adv_retry;
+static int adv_retry_attempt;
 /* HID notifications are enabled by the host through the report CCC, which
  * esp_hid does not expose. Treat the first successful indication as the
  * readiness signal: probing at report rate floods the USB console while the
@@ -74,6 +80,7 @@ static bool controller_inited, controller_enabled, host_inited, host_enabled;
 static SemaphoreHandle_t report_lock;
 
 static void advertise(void);
+static void schedule_adv_retry(void);
 
 /* TEMP diagnostic (remove before delivery): esp_hid only logs report CCC
  * writes at verbose level, which this build compiles out. Log the GATTS events
@@ -138,10 +145,27 @@ static void advertise(void)
         if (err != ESP_OK) {
             atomic_store(&advertising, false);
             ESP_LOGW(TAG, "Advertise: %s", esp_err_to_name(err));
-        } else {
-            ESP_LOGI(TAG, "BLE advertising started");
+            schedule_adv_retry();
         }
     }
+}
+
+static void adv_retry_cb(void *arg)
+{
+    (void)arg;
+    atomic_store(&advertising, false);
+    advertise();
+}
+
+static void schedule_adv_retry(void)
+{
+    static const uint64_t delays_us[] = {200000, 500000, 1000000};
+    if (!adv_retry || adv_retry_attempt >= 3 || atomic_load(&releasing) || atomic_load(&linked)) {
+        return;
+    }
+    uint64_t delay = delays_us[adv_retry_attempt++];
+    esp_timer_stop(adv_retry);
+    esp_timer_start_once(adv_retry, delay);
 }
 
 static void gap_event(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *data)
@@ -154,6 +178,16 @@ static void gap_event(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *data
     case ESP_GAP_BLE_SCAN_RSP_DATA_SET_COMPLETE_EVT:
         if (data->scan_rsp_data_cmpl.status == ESP_BT_STATUS_SUCCESS) atomic_fetch_or(&advertising_data_ready, 2);
         advertise();
+        break;
+    case ESP_GAP_BLE_ADV_START_COMPLETE_EVT:
+        if (data->adv_start_cmpl.status == ESP_BT_STATUS_SUCCESS) {
+            adv_retry_attempt = 0;
+            ESP_LOGI(TAG, "BLE advertising started");
+        } else {
+            atomic_store(&advertising, false);
+            ESP_LOGW(TAG, "ADV start failed, status %d", data->adv_start_cmpl.status);
+            schedule_adv_retry();
+        }
         break;
     case ESP_GAP_BLE_SEC_REQ_EVT:
         esp_ble_gap_security_rsp(data->ble_security.ble_req.bd_addr, true);
@@ -296,6 +330,10 @@ esp_err_t ble_mouse_init(void)
     const esp_timer_create_args_t fallback_args = {
         .callback = advertise_fallback_cb, .name = "ble_adv_fallback",
     };
+    const esp_timer_create_args_t retry_args = {
+        .callback = adv_retry_cb, .name = "ble_adv_retry",
+    };
+    if (esp_timer_create(&retry_args, &adv_retry) != ESP_OK) adv_retry = NULL;
     err = esp_timer_create(&fallback_args, &advertise_fallback);
     if (err != ESP_OK) {
         advertise_fallback = NULL;

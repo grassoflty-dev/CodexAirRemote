@@ -1,4 +1,4 @@
-﻿/* LVGL UI for Codex Air Remote (moved out of main/app_main.c).
+/* LVGL UI for Codex Air Remote (moved out of main/app_main.c).
  * Owns the screen widgets, the 125 ms render timer and all touch interaction.
  * main only reports capabilities and calls app_ui_init(). */
 #include <stdio.h>
@@ -142,7 +142,14 @@ static void render(lv_timer_t *timer)
         lv_obj_add_state(b_button, LV_STATE_DISABLED);
     }
 
-    int requested = 100; /* TEMP brightness diagnostic: was 70 active / 24 idle */
+    /* Start at full brightness and only dim when the panel has been idle for
+     * 25 s: a dark background at the idle level is easy to mistake for a dead
+     * panel (this cost a whole debugging session). */
+    static uint32_t boot_tick;
+    uint32_t now = lv_tick_get();
+    if (boot_tick == 0) boot_tick = now;
+    bool active = mouse_active || recording_mode || lv_tick_elaps(last_interaction) < 25000;
+    int requested = (now - boot_tick < 5000) ? 100 : (active ? 70 : 24);
     if (requested != brightness && board_set_brightness(requested) == ESP_OK) brightness = requested;
 }
 
@@ -239,7 +246,7 @@ bool app_ui_init(lv_display_t *display)
 {
     if (!board_lock(1000)) return false;
     lv_obj_t *screen = lv_display_get_screen_active(display);
-    lv_obj_set_style_bg_color(screen, lv_color_hex(0xFF0000), 0); /* TEMP red-screen diagnostic */
+    lv_obj_set_style_bg_color(screen, lv_color_hex(0x0b121d), 0);
     lv_obj_set_style_text_color(screen, lv_color_hex(0xc2cedb), 0);
     lv_obj_t *title = lv_label_create(screen);
     lv_label_set_text(title, "Codex Air Remote");

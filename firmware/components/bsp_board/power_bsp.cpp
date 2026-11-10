@@ -1,4 +1,4 @@
-﻿#include <stdio.h>
+#include <stdio.h>
 #include <freertos/FreeRTOS.h>
 #include <driver/gpio.h>
 #include <esp_err.h>
@@ -88,11 +88,6 @@ void Custom_PmicRegisterInit(void) {
     if (axp2101.getALDO3Voltage() != 3300) axp2101.setALDO3Voltage(3300);
     if (axp2101.getALDO4Voltage() != 3300) axp2101.setALDO4Voltage(3300);
 
-    axp2101.enableDC1();
-    axp2101.enableALDO1();
-    axp2101.enableALDO2();
-    axp2101.enableALDO4();
-
     axp2101.setPrechargeCurr(XPOWERS_AXP2101_PRECHARGE_50MA);
     axp2101.setChargerConstantCurr(XPOWERS_AXP2101_CHG_CUR_500MA);
     axp2101.setChargerTerminationCurr(XPOWERS_AXP2101_CHG_ITERM_50MA);
@@ -100,13 +95,6 @@ void Custom_PmicRegisterInit(void) {
     ESP_LOGI(TAG, "rails: DC1=%d ALDO1=%d ALDO2=%d ALDO3=%d ALDO4=%d",
              axp2101.isEnableDC1(), axp2101.isEnableALDO1(), axp2101.isEnableALDO2(),
              axp2101.isEnableALDO3(), axp2101.isEnableALDO4());
-
-    // Panel reset is a rail power cycle: on -> off -> on with 100 ms gaps.
-    axp2101.enableALDO3();
-    vTaskDelay(pdMS_TO_TICKS(100));
-    axp2101.disableALDO3();
-    vTaskDelay(pdMS_TO_TICKS(100));
-    axp2101.enableALDO3();
 }
 
 void Axp2101_isChargingTask(void *arg) {
