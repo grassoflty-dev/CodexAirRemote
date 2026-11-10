@@ -1,4 +1,4 @@
-/* LVGL UI for Codex Air Remote (moved out of main/app_main.c).
+﻿/* LVGL UI for Codex Air Remote (moved out of main/app_main.c).
  * Owns the screen widgets, the 125 ms render timer and all touch interaction.
  * main only reports capabilities and calls app_ui_init(). */
 #include <stdio.h>
@@ -47,7 +47,6 @@ static const char *voice_message(voice_state_t s)
 
 static void mouse_clicked(lv_event_t *event)
 {
-    ESP_LOGI(TAG, "ui: gyro tap");
     last_interaction = lv_tick_get();
     if (voice_busy(voice_state())) return;
     if (mouse_active) {
@@ -63,7 +62,6 @@ static void mouse_clicked(lv_event_t *event)
 
 static void voice_clicked(lv_event_t *event)
 {
-    ESP_LOGI(TAG, "ui: voice tap");
     last_interaction = lv_tick_get();
     if (mouse_active || voice_busy(voice_state())) return;
     mouse_message = voice_ready && voice_start() == ESP_OK ?

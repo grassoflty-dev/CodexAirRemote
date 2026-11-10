@@ -54,23 +54,47 @@ static esp_ble_adv_params_t adv_params = {
 
 static nvs_handle_t ccc_nvs;
 static bool ccc_known;
+/* Handles of the HID input-report CCCDs. The HID descriptor is fixed, so the
+ * attribute handles are stable for a given firmware; they are learned from the
+ * host's CCCD writes when available and these are the fallback. */
+static uint16_t ccc_handles[2] = {43, 65};
+static uint8_t ccc_handle_count = 2;
 
 /* Persist the HID report CCCD so a reboot does not silently lose the Windows
  * subscription (the GATT server resets CCCD state, the host does not). */
-static void ccc_persist(bool on)
+static void ccc_persist(uint16_t handle, bool on)
 {
     ccc_known = on;
-    if (ccc_nvs == 0 && nvs_open("airremote_ble", NVS_READWRITE, &ccc_nvs) != ESP_OK) return;
-    if (nvs_set_u8(ccc_nvs, "ccc", on ? 1 : 0) == ESP_OK) nvs_commit(ccc_nvs);
+    bool found = false;
+    for (uint8_t i = 0; i < ccc_handle_count; i++) {
+        if (ccc_handles[i] == handle) found = true;
+    }
+    if (!found && ccc_handle_count < 2) {
+        ccc_handles[ccc_handle_count++] = handle;
+    }
+    if (ccc_nvs == 0 && nvs_open("airremote_ble", NVS_READWRITE, &ccc_nvs) != ESP_OK) {
+        ESP_LOGW(TAG, "CCCD persist: nvs_open failed");
+        return;
+    }
+    esp_err_t err = nvs_set_u8(ccc_nvs, "ccc", on ? 1 : 0);
+    if (err == ESP_OK) err = nvs_set_u16(ccc_nvs, "h0", ccc_handles[0]);
+    if (err == ESP_OK && ccc_handle_count > 1) err = nvs_set_u16(ccc_nvs, "h1", ccc_handles[1]);
+    if (err == ESP_OK) err = nvs_commit(ccc_nvs);
+    ESP_LOGI(TAG, "CCCD persist on=%d h0=%u h1=%u -> %s", on ? 1 : 0,
+             ccc_handles[0], ccc_handles[1], esp_err_to_name(err));
 }
 
 static void ccc_load(void)
 {
     uint8_t v = 0;
-    if (nvs_open("airremote_ble", NVS_READONLY, &ccc_nvs) == ESP_OK &&
-        nvs_get_u8(ccc_nvs, "ccc", &v) == ESP_OK) {
-        ccc_known = v != 0;
+    uint16_t h = 0;
+    if (nvs_open("airremote_ble", NVS_READONLY, &ccc_nvs) == ESP_OK) {
+        if (nvs_get_u8(ccc_nvs, "ccc", &v) == ESP_OK) ccc_known = v != 0;
+        if (nvs_get_u16(ccc_nvs, "h0", &h) == ESP_OK) ccc_handles[0] = h;
+        if (nvs_get_u16(ccc_nvs, "h1", &h) == ESP_OK) ccc_handles[1] = h;
     }
+    ESP_LOGI(TAG, "CCCD load known=%d h0=%u h1=%u", ccc_known ? 1 : 0,
+             ccc_handles[0], ccc_handles[1]);
 }
 static atomic_bool hid_started, advertising, releasing;/* The controller can answer the advertising-enable HCI command with "memory
  * full" right after the HID service is created. Retrying with a short backoff
@@ -133,7 +157,7 @@ static void gatts_event_probe(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if
             bool on = (ccc & 0x0003) != 0;
             ESP_LOGI(TAG, "CCCD handle=%u value=%u -> %s", param->write.handle, ccc,
                      on ? "subscribed" : "unsubscribed");
-            ccc_persist(on);
+            ccc_persist(param->write.handle, on);
             if (on) {
                 atomic_store(&reports_ready, true);
             }
@@ -161,6 +185,20 @@ static esp_err_t register_gatts_callback(void)
  * device), so only log it here. When the event did arrive but advertising was
  * skipped because the advertising data was not ready yet, retry the (idempotent)
  * advertise() call. */
+/* Restore the server-side CCCD after a reboot: the host keeps its subscription
+ * for a bonded device and does not rewrite the CCCD, but the GATT server starts
+ * from zero, so esp_hid would reject every report. */
+static void ccc_restore(void)
+{
+    if (!ccc_known) return;
+    const uint8_t on[2] = {0x01, 0x00};
+    for (uint8_t i = 0; i < ccc_handle_count; i++) {
+        esp_err_t err = esp_ble_gatts_set_attr_value(ccc_handles[i], 2, on);
+        ESP_LOGI(TAG, "restore CCCD handle=%u -> %s", ccc_handles[i], esp_err_to_name(err));
+        if (err == ESP_OK) atomic_store(&reports_ready, true);
+    }
+}
+
 static void advertise_fallback_cb(void *arg)
 {
     if (atomic_load(&releasing) || !device) return;
@@ -244,6 +282,7 @@ static void hid_event(void *arg, esp_event_base_t base, int32_t event, void *dat
     case ESP_HIDD_START_EVENT:
         atomic_store(&hid_started, true);
         ESP_LOGI(TAG, "BLE HID started");
+        ccc_restore();
         advertise();
         break;
     case ESP_HIDD_CONNECT_EVENT:
@@ -252,9 +291,9 @@ static void hid_event(void *arg, esp_event_base_t base, int32_t event, void *dat
         atomic_store(&reports_ready, false);
         if (ccc_known) {
             /* Windows keeps its subscription across device reboots even though
-             * our GATT server starts with a cleared CCCD; trust NVS and let the
-             * report path verify it. */
-            atomic_store(&reports_ready, true);
+             * our GATT server starts with a cleared CCCD; restore the attribute
+             * values so esp_hid accepts reports again. */
+            ccc_restore();
             ESP_LOGI(TAG, "restoring CCCD subscription from NVS");
         }
         ESP_LOGI(TAG, "BLE host connected");
