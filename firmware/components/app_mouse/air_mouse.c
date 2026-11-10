@@ -15,7 +15,7 @@
 #include "qmi8658.h"
 
 static const char *TAG = "air_mouse";
-enum { SAMPLE_MS = 4, CALIBRATION_SAMPLES = 200 };
+enum { SAMPLE_MS = 4, CALIBRATION_SAMPLES = 150 };
 static const float GRAVITY = 9.80665f;
 static const float START_RATE = 1.5f, STOP_RATE = 1.0f;
 static const float LINEAR_GAIN = 11.0f, QUADRATIC_GAIN = 0.17f;
@@ -154,7 +154,7 @@ static void mouse_task(void *unused)
             vec gyro = {sample.gyroX, sample.gyroY, sample.gyroZ};
             float accel_mag = sqrtf(dot(accel, accel));
             if (!atomic_load(&calibrated)) {
-                if (fabsf(accel_mag - GRAVITY) > 0.75f || dot(gyro, gyro) > 25 ||
+                if (fabsf(accel_mag - GRAVITY) > 1.0f || dot(gyro, gyro) > 64 ||
                     (collected && dot(unit(accel), unit(sum_accel)) < 0.999f)) {
                     collected = 0;
                     sum_accel = sum_gyro = (vec){0};
@@ -258,6 +258,7 @@ esp_err_t mouse_start(void)
     atomic_store(&calibrated, false);
     atomic_fetch_add(&mode_generation, 1);
     atomic_store(&requested, true);
+    ESP_LOGI(TAG, "mouse mode on, calibrating");
     return ESP_OK;
 }
 

@@ -80,3 +80,25 @@ I (1906) air_remote: heap after ble            free=23048
 I (2013) air_remote: AIRREMOTE UI READY; IMU=1 BLE=1 VOICE=1 PMIC=1
 $ AR1? -> AR1 READY 7 84c7bb3d7b76
 ```
+
+## 5. Windows keeps the HID subscription, the device does not
+
+The GATT server drops CCCD state on every reset, but Windows remembers the
+subscription of a bonded device and does not rewrite the CCCD on reconnect.
+Result: after a reboot (or after flashing a new image) the board advertises and
+reconnects, yet every `esp_hidd_dev_input_set()` fails with "not enabled by
+host", so the cursor never moves and A/B do nothing.
+
+`ble_mouse.c` now stores the CCCD value in NVS (`airremote_ble/ccc`) when the
+host writes it, and restores `reports_ready` on the next connection
+(`restoring CCCD subscription from NVS`). Until that value has been written once,
+the practical workaround is to remove the device in Windows and pair it again.
+
+## 6. IMU zero-rate calibration
+
+`air_mouse.c` needs ~0.6 s of stillness after tapping Gyro (150 samples at
+4 ms). The original thresholds (0.75 g / gyro² 25 / 200 samples) were too strict
+for a hand-held board and timed out after 15 s; they are now 1.0 g / 64 /
+150 samples with a 30 s timeout, and the UI shows
+"Calibrating - hold the board still" and "Calibration failed, tap Gyro and hold
+still" so the state is visible.

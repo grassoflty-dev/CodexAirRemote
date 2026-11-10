@@ -1,4 +1,4 @@
-﻿#include "ble_mouse.h"
+#include "ble_mouse.h"
 
 #include <stdatomic.h>
 #include "esp_bt.h"
@@ -10,6 +10,7 @@
 #include "esp_hidd_gatts.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "nvs.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 
@@ -51,8 +52,27 @@ static esp_ble_adv_params_t adv_params = {
     .channel_map = ADV_CHNL_ALL, .adv_filter_policy = ADV_FILTER_ALLOW_SCAN_ANY_CON_ANY,
 };
 
-static atomic_bool hid_started, advertising, releasing;
-/* The controller can answer the advertising-enable HCI command with "memory
+static nvs_handle_t ccc_nvs;
+static bool ccc_known;
+
+/* Persist the HID report CCCD so a reboot does not silently lose the Windows
+ * subscription (the GATT server resets CCCD state, the host does not). */
+static void ccc_persist(bool on)
+{
+    ccc_known = on;
+    if (ccc_nvs == 0 && nvs_open("airremote_ble", NVS_READWRITE, &ccc_nvs) != ESP_OK) return;
+    if (nvs_set_u8(ccc_nvs, "ccc", on ? 1 : 0) == ESP_OK) nvs_commit(ccc_nvs);
+}
+
+static void ccc_load(void)
+{
+    uint8_t v = 0;
+    if (nvs_open("airremote_ble", NVS_READONLY, &ccc_nvs) == ESP_OK &&
+        nvs_get_u8(ccc_nvs, "ccc", &v) == ESP_OK) {
+        ccc_known = v != 0;
+    }
+}
+static atomic_bool hid_started, advertising, releasing;/* The controller can answer the advertising-enable HCI command with "memory
  * full" right after the HID service is created. Retrying with a short backoff
  * recovers from that transient failure; success is only reported when the
  * completion event says so. */
@@ -104,6 +124,20 @@ static void gatts_event_probe(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if
     case ESP_GATTS_WRITE_EVT:
         ESP_LOGI(TAG, "GATTS write handle=%u len=%u prep=%d",
                  param->write.handle, param->write.len, param->write.is_prep);
+        /* The HID report CCCD is a two byte value. Windows only writes it when
+         * the device is paired, so remember the subscription in NVS and restore
+         * it after a reboot: the GATT server drops CCCD state on reset but the
+         * host keeps believing it is still subscribed. */
+        if (!param->write.is_prep && param->write.len == 2) {
+            uint16_t ccc = (uint16_t)param->write.value[0] | ((uint16_t)param->write.value[1] << 8);
+            bool on = (ccc & 0x0003) != 0;
+            ESP_LOGI(TAG, "CCCD handle=%u value=%u -> %s", param->write.handle, ccc,
+                     on ? "subscribed" : "unsubscribed");
+            ccc_persist(on);
+            if (on) {
+                atomic_store(&reports_ready, true);
+            }
+        }
         break;
     default:
         break;
@@ -216,6 +250,13 @@ static void hid_event(void *arg, esp_event_base_t base, int32_t event, void *dat
         atomic_fetch_add(&generation, 1);
         atomic_store(&linked, true);
         atomic_store(&reports_ready, false);
+        if (ccc_known) {
+            /* Windows keeps its subscription across device reboots even though
+             * our GATT server starts with a cleared CCCD; trust NVS and let the
+             * report path verify it. */
+            atomic_store(&reports_ready, true);
+            ESP_LOGI(TAG, "restoring CCCD subscription from NVS");
+        }
         ESP_LOGI(TAG, "BLE host connected");
         break;
     case ESP_HIDD_DISCONNECT_EVENT:
@@ -342,6 +383,7 @@ esp_err_t ble_mouse_init(void)
         ESP_LOGW(TAG, "fallback timer start: %s", esp_err_to_name(err));
     }
     atomic_store(&reports_ready, false);
+    ccc_load();
     probe_at_us = 0;
     dropped_reports = 0;
     if (hid_logs_muted) {
@@ -441,6 +483,12 @@ bool ble_mouse_report(uint8_t buttons, int8_t x, int8_t y)
         }
         uint8_t report[] = {buttons & 0x07, (uint8_t)x, (uint8_t)y, 0};
         sent = esp_hidd_dev_input_set(device, 0, 0, report, sizeof(report)) == ESP_OK;
+        static int64_t last_report_log_us;
+        if (now - last_report_log_us >= 200000) {
+            last_report_log_us = now;
+            ESP_LOGI(TAG, "report dx=%d dy=%d btn=%02x ret=%s", (int)(int8_t)x, (int)(int8_t)y,
+                     buttons, sent ? "ok" : "fail");
+        }
         if (sent) {
             dropped_reports = 0;
             if (!atomic_exchange(&reports_ready, true)) {
