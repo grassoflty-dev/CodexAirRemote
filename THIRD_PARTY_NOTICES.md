@@ -2,7 +2,7 @@
 
 本仓库自有源码采用 [Apache-2.0](LICENSE)。依赖的许可证独立适用，根许可证不会覆盖或更改第三方软件的许可证与版权。
 
-本仓库包含两个工程（`windows/` Windows 辅助程序、`firmware/` ESP32-C6 固件）和一个归档工程（`firmware_s3/`，迁移前的 ESP32-S3 固件）。SDK、托管组件缓存、Python 环境、VB-CABLE 和 Codex 本体不随源码仓库提交。
+本仓库包含两个工程（`windows/` Windows 辅助程序、`firmware/` **ESP32-C6-Touch-AMOLED-2.16** 固件）；迁移前的 ESP32-S3 归档工程已移出仓库，仅本机 `archive_local/` 保留，不在仓库内。SDK、托管组件缓存、Python 环境、VB-CABLE 和 Codex 本体不随源码仓库提交。
 
 ## 固件依赖（`firmware/`）
 
@@ -37,7 +37,7 @@
 | `bsp_port/xpowers/` | [XPowersLib](https://github.com/lewisxhe/XPowersLib) | MIT，Copyright (c) 2024 lewis he；许可证全文保留在 `XPowersLib.h` 文件头 |
 | `codec_board/` | Espressif `codec_board` 组件（ES8311/ES7210 初始化） | **Espressif Modified MIT**（LicenseRef-Espressif-Modified-MIT，仅限与 Espressif 产品配合使用）；许可证全文见 `firmware/components/codec_board/LICENSE` |
 | `firmware/docs/reference/esp_hid_device_example/` | ESP-IDF `examples/bluetooth/esp_hid/device` 参考副本，不参与构建 | `Unlicense OR CC0-1.0`，Copyright Espressif Systems |
-| `firmware_s3/`（归档工程） | ESP32-S3-Touch-AMOLED-1.8 + Waveshare BSP 2.0.3 + LVGL 9.6 + esp_lvgl_port | Apache-2.0（微雪 BSP、QMI8658、esp_lvgl_port 等组件）；仅作历史参考，不再构建 |
+| `archive_local/firmware_s3/`（本机归档，不在仓库） | ESP32-S3-Touch-AMOLED-1.8 + Waveshare BSP 2.0.3 + LVGL 9.6 + esp_lvgl_port | Apache-2.0（微雪 BSP、QMI8658、esp_lvgl_port 等组件）；仅作历史参考，不再构建 |
 
 ## Windows 辅助程序与构建工具（`windows/`）
 

@@ -94,8 +94,8 @@
 
 | 组件 | 用途 | 版本 | 获取方式 | 是否放进工作区 |
 | --- | --- | --- | --- | --- |
-| `firmware_s3/` | 迁移前的 ESP32-S3-Touch-AMOLED-1.8 固件，保留作参考，不参与当前构建 | ESP-IDF 5.5.5；Waveshare BSP 2.0.3；LVGL 9.6；QMI8658 2.0.0 | Git 归档 | 是（只读参考，不构建） |
-| `firmware_s3/managed_components/`、`build/`、`sdkconfig` | 旧工程构建产物，已忽略 | — | 若编译旧工程时生成 | 否 |
+| `archive_local/firmware_s3/` | 迁移前的 ESP32-S3 固件（**不在仓库内**，本机归档），不参与当前构建 | ESP-IDF 5.5.5；Waveshare BSP 2.0.3；LVGL 9.6；QMI8658 2.0.0 | Git 归档 | 是（只读参考，不构建） |
+| `archive_local/firmware_s3/managed_components/`、`build/`、`sdkconfig` | 旧工程构建产物，已忽略 | — | 若编译旧工程时生成 | 否 |
 | `tools/eim/eim.exe` | Espressif IDF 安装管理器，本地保留 | 随下载 | 手动放入 | 否（已忽略） |
 
 归档工程不代表当前受支持路径。C6 与 S3 的差异、迁移步骤和待验证项见 [firmware-c6-migration.md](firmware-c6-migration.md)。

@@ -15,7 +15,7 @@
   VB-CABLE 虚拟麦克风路由、语音目标切换（Codex 桌面听写 / DeepSeek Harness）、2.4 GHz 热点管理、蓝牙鼠标配对。
 - **ESP32-C6 固件**（`firmware/`，ESP-IDF 5.5.5）：480×480 LVGL 触屏界面、BLE HID 空中鼠标（QMI8658）、
   按钮 A/B（鼠标左右键 / 语音发送取消）、Wi-Fi + TLS1.2 + WebSocket 语音链路、USB Serial/JTAG 配网命令。
-- `firmware_s3/`：迁移前的 S3 归档工程，不参与构建。
+- 迁移前的 S3 归档工程**已移出仓库**（本机 `archive_local/firmware_s3/`，不参与构建）。
 
 ### 1.2 硬件
 

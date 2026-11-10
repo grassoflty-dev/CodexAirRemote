@@ -63,5 +63,5 @@
 
 - `windows/`：Windows 辅助程序（Python，Codex 语音桥、配网/烧录工具）。
 - `firmware/`：ESP32-C6-Touch-AMOLED-2.16 固件（ESP-IDF 5.5.5）。
-- `firmware_s3/`：原 S3 工程归档，不参与开发。
+- `archive_local/firmware_s3/`：原 S3 工程归档（本机保留，不在仓库跟踪，不参与开发）。
 - 开发环境、组件清单、迁移记录见 `README.md`、`docs/components.md`、`docs/firmware-c6-migration.md`。

@@ -5,7 +5,7 @@ Codex Air Remote 把一块带触摸屏的 ESP32 开发板变成 Codex 的无线�
 - **Windows 辅助程序**（`windows/`）：Tkinter 图形界面、USB 烧录与 Wi-Fi 配网、VB-CABLE 虚拟麦克风音频路由、可切换语音目标（Codex / DeepSeek Harness）、Windows 2.4 GHz 热点、蓝牙鼠标配对。
 - **ESP32-C6 固件**（`firmware/`）：面向微雪 ESP32-C6-Touch-AMOLED-2.16 的触屏界面、蓝牙 HID 鼠标、Wi-Fi/HTTPS/WebSocket 语音链路、USB Serial/JTAG 配网。
 
-`firmware_s3/` 是迁移前的 ESP32-S3-Touch-AMOLED-1.8 工程，只作归档保留，不再参与构建。C6 版本已在实机上验证到启动、显示/触摸、语音握手与音频帧，鼠标/按键与完整语音 E2E 的待实测项见 [`docs/pending-hardware-validation.md`](docs/pending-hardware-validation.md)；迁移前的本机验证记录见 [TEST_REPORT.md](TEST_REPORT.md)。
+本仓库**唯一活动固件是 `firmware/`**（Waveshare **ESP32-C6**-Touch-AMOLED-2.16，SH8601 480×480，ESP-IDF v5.5.5）。迁移前的 ESP32-S3 工程**已移出仓库**，仅在本机 `archive_local/` 保留归档，不参与构建、也不随仓库分发。C6 版本已在实机上验证到启动、显示/触摸、语音握手与音频帧，鼠标/按键与完整语音 E2E 的待实测项见 [`docs/pending-hardware-validation.md`](docs/pending-hardware-validation.md)；迁移前的本机验证记录见 [TEST_REPORT.md](TEST_REPORT.md)。
 
 这是独立的社区源码项目，不隶属于 OpenAI、乐鑫或微雪。仓库只提供源码、脚本和文档，不包含预编译固件、EXE、模型、驱动或任何本机密钥。
 
@@ -51,7 +51,7 @@ Codex Air Remote 把一块带触摸屏的 ESP32 开发板变成 Codex 的无线�
 | `firmware/Build.ps1`、`Idf.ps1` | 固件构建入口、`idf.py` 子命令包装（menuconfig/monitor/fullclean） |
 | `firmware/partitions.csv`、`sdkconfig.defaults`、`CMakeLists.txt` | 分区表、默认配置、目标芯片（`esp32c6`） |
 | `firmware/build/`、`firmware/managed_components/` | 构建产物与托管组件缓存，已忽略 |
-| `firmware_s3/` | 迁移前的 S3 工程归档，不再构建 |
+| `archive_local/firmware_s3/` | 迁移前的 S3 工程（**不在仓库内**，仅本机归档） |
 | `tools/eim/eim.exe` | Espressif IDF 安装管理器，本地保留，已忽略 |
 | `docs/` | 组件清单与 C6 迁移说明 |
 | `LICENSE`、`NOTICE`、`THIRD_PARTY_NOTICES.md`、`TEST_REPORT.md` | 许可、版权声明与验证记录 |
@@ -68,7 +68,7 @@ Codex Air Remote 把一块带触摸屏的 ESP32 开发板变成 Codex 的无线�
 | --- | --- |
 | `windows/.venv/`、`windows/.local/`、`windows/app/`、`windows/build/` | Python 环境、配对材料与运行时数据、打包输出、打包中间产物 |
 | `firmware/build/`、`firmware/managed_components/`、`firmware/sdkconfig` | 固件构建产物、托管组件缓存、生成的配置 |
-| `firmware_s3/build/`、`firmware_s3/managed_components/`、`firmware_s3/sdkconfig` | 归档工程的旧构建产物 |
+| `archive_local/` | 本机归档目录（含 S3 旧工程的构建产物），已被 `.gitignore` 忽略 |
 | `tools/eim/eim.exe` | 本机 ESP-IDF 安装管理器（二进制，不提交） |
 | `archive/` | 迁移时从旧 Codex 工作树整理出的历史资料（旧 ASR 测试素材、旧脚本、临时构建）；与两个项目无关，确认不需要后可直接删除 |
 | `.local/`（仓库根） | 其他本机工具可能生成的临时目录，已忽略 |

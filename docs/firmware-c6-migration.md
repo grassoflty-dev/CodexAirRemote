@@ -1,12 +1,12 @@
 # ESP32-S3 → ESP32-C6 迁移说明
 
-本文记录 Codex Air Remote 从 ESP32-S3-Touch-AMOLED-1.8 迁移到 **ESP32-C6-Touch-AMOLED-2.16** 的实现约定、引脚与镜像地址，以及**尚未实机验证**的风险点。迁移前的 S3 工程归档在 `firmware_s3/`，不再参与构建。
+本文记录 Codex Air Remote 从 ESP32-S3-Touch-AMOLED-1.8 迁移到 **ESP32-C6-Touch-AMOLED-2.16** 的实现约定、引脚与镜像地址，以及**尚未实机验证**的风险点。迁移前的 S3 工程已**移出仓库**（本机 `archive_local/firmware_s3/` 保留归档），不再参与构建。
 
 > 本文描述的是迁移后的代码约定，不代表已在开发板上验收。上板前请按文末清单逐项确认。
 
 ## 迁移总览
 
-| 维度 | ESP32-S3（`firmware_s3/`，归档） | ESP32-C6（`firmware/`，当前） |
+| 维度 | ESP32-S3（`archive_local/firmware_s3/`，归档） | ESP32-C6（`firmware/`，当前） |
 | --- | --- | --- |
 | 芯片 | ESP32-S3，双核 Xtensa LX7，240 MHz | ESP32-C6，单核 RISC-V，160 MHz |
 | 内存 | 带 PSRAM（OCT） | **无 PSRAM**，512 KB SRAM |
@@ -26,7 +26,7 @@
 
 - `firmware/CMakeLists.txt` 固定 `set(IDF_TARGET "esp32c6")`，不依赖 `idf.py set-target`。
 - `sdkconfig.defaults` 固定 160 MHz、16 MB Flash、自定义分区表、USB Serial/JTAG 控制台。
-- 已移除全部 `CONFIG_SPIRAM*` 选项；`firmware_s3/sdkconfig.defaults` 中的 `CONFIG_SPIRAM=y`、`CONFIG_SPIRAM_MODE_OCT=y`、`CONFIG_SPIRAM_SPEED_80M=y`、`CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=65536` 不再存在。
+- 已移除全部 `CONFIG_SPIRAM*` 选项；已归档的 S3 `sdkconfig.defaults` 中的 `CONFIG_SPIRAM=y`、`CONFIG_SPIRAM_MODE_OCT=y`、`CONFIG_SPIRAM_SPEED_80M=y`、`CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=65536` 不再存在。
 
 ### 内存分配调整
 

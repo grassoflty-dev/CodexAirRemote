@@ -18,11 +18,8 @@
 /firmware/sdkconfig
 /firmware/sdkconfig.old
 
-# 原 ESP32-S3 归档工程（不参与开发）
-/firmware_s3/build/
-/firmware_s3/managed_components/
-/firmware_s3/sdkconfig
-/firmware_s3/sdkconfig.old
+# 本机归档目录（含已移出仓库的 ESP32-S3 旧工程，不参与构建、不入库）
+/archive_local/
 
 # ---------- Windows 辅助程序 ----------
 /windows/.venv/

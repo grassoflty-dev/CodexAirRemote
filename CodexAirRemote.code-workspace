@@ -20,13 +20,15 @@
       "**/.local": true,
       "**/app": true,
       "**/archive": true,
+      "**/archive_local": true,
       "**/vendor": true
     },
     "files.exclude": {
       "**/__pycache__": true,
       "**/managed_components": true,
       "**/.venv": true,
-      "**/archive": true
+      "**/archive": true,
+      "**/archive_local": true
     }
   },
   "extensions": {
