@@ -1,7 +1,12 @@
-#include "board.h"
+﻿#include "board.h"
+
+#include <esp_log.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 
 #include "codec_bsp.h"
 #include "display_bsp.h"
+#include "esp_heap_caps.h"
 #include "i2c_bsp.h"
 #include "lvgl_bsp.h"
 #include "power_bsp.h"
@@ -11,21 +16,31 @@ static I2cMasterBus *s_bus = NULL;
 static DisplayPort *s_display = NULL;
 static CodecPort *s_codec = NULL;
 
-extern "C" esp_err_t board_init(void)
+/* Split initialisation lets app_main give BLE the first, least fragmented
+ * allocations before the LVGL draw buffer and the rest of the UI memory. */
+extern "C" esp_err_t board_bus_init(void)
 {
     if (s_bus) {
         return ESP_OK;
     }
-
     s_bus = new I2cMasterBus(BSP_I2C_SCL, BSP_I2C_SDA, BSP_I2C_NUM);
     if (!s_bus) {
         return ESP_ERR_NO_MEM;
     }
-
     /* AXP2101 first: it powers the panel rail (ALDO3) that the display driver
      * toggles during reset, and it reports battery state for the UI. */
     Custom_PmicPortInit(s_bus, BSP_PMU_I2C_ADDR);
+    return ESP_OK;
+}
 
+extern "C" esp_err_t board_display_start(void)
+{
+    if (s_display) {
+        return ESP_OK;
+    }
+    if (board_bus_init() != ESP_OK) {
+        return ESP_ERR_NO_MEM;
+    }
     s_display = new DisplayPort(*s_bus, BSP_LCD_H_RES, BSP_LCD_V_RES,
                                 BSP_LCD_PCLK, BSP_LCD_DATA0, BSP_LCD_DATA1,
                                 BSP_LCD_DATA2, BSP_LCD_DATA3, BSP_LCD_CS,
@@ -35,9 +50,48 @@ extern "C" esp_err_t board_init(void)
     }
     s_display->DisplayPort_TouchInit();
     Lvgl_PortInit(*s_display);
-
-    s_codec = new CodecPort(*s_bus, "C6_AMOLED_2_16");
     return ESP_OK;
+}
+
+/* TEMP display bisect (remove before delivery): panel only, no touch/LVGL. */
+extern "C" esp_err_t board_display_probe_start(void)
+{
+    if (s_display) {
+        return ESP_OK;
+    }
+    if (board_bus_init() != ESP_OK) {
+        return ESP_ERR_NO_MEM;
+    }
+    s_display = new DisplayPort(*s_bus, BSP_LCD_H_RES, BSP_LCD_V_RES,
+                                BSP_LCD_PCLK, BSP_LCD_DATA0, BSP_LCD_DATA1,
+                                BSP_LCD_DATA2, BSP_LCD_DATA3, BSP_LCD_CS,
+                                BSP_LCD_TOUCH_INT, BSP_LCD_TOUCH_RST, BSP_LCD_SPI_NUM);
+    return s_display ? ESP_OK : ESP_ERR_NO_MEM;
+}
+
+extern "C" esp_err_t board_audio_init(void)
+{
+    if (s_codec) {
+        return ESP_OK;
+    }
+    if (board_bus_init() != ESP_OK) {
+        return ESP_ERR_NO_MEM;
+    }
+    s_codec = new CodecPort(*s_bus, "C6_AMOLED_2_16");
+    return s_codec ? ESP_OK : ESP_ERR_NO_MEM;
+}
+
+extern "C" esp_err_t board_init(void)
+{
+    esp_err_t err = board_bus_init();
+    if (err != ESP_OK) {
+        return err;
+    }
+    err = board_display_start();
+    if (err != ESP_OK) {
+        return err;
+    }
+    return board_audio_init();
 }
 
 extern "C" lv_display_t *board_display(void)
@@ -89,3 +143,4 @@ extern "C" esp_codec_dev_handle_t board_microphone(void)
 {
     return s_codec ? s_codec->microphone() : NULL;
 }
+

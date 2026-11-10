@@ -14,3 +14,4 @@ void Axp2101_SetAldo3(uint8_t vol);
 /* AXP2101 battery state used by the on-screen battery indicator. */
 bool Axp2101_IsBatteryConnected(void);
 int Axp2101_GetBatteryPercent(void);
+

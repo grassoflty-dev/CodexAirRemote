@@ -65,33 +65,26 @@ void Custom_PmicPortInit(I2cMasterBus *i2cbus,uint8_t dev_addr) {
     Custom_PmicRegisterInit();
 }
 
+/*
+ * Board bring-up verified on the same hardware by
+ * mfellner/esp32-playground components/board/board.cpp (docs/hardware.md):
+ * only the panel-reset rail (AXP2101 ALDO3) is touched; charger and unrelated
+ * rail registers keep their factory values. Writing DC1/ALDO1/ALDO2/ALDO4 and
+ * VBUS limits (as the generic Waveshare example does) is unnecessary and was a
+ * suspect for the black panel, so it is deliberately not done here.
+ */
 void Custom_PmicRegisterInit(void) {
-    axp2101.setVbusCurrentLimit(XPOWERS_AXP2101_VBUS_CUR_LIM_2000MA);
-
-    if(axp2101.getDC1Voltage() != 3300) {
-        axp2101.setDC1Voltage(3300);
-        ESP_LOGW("axp2101_init_log","Set DCDC1 to output 3V3");
+    // ALDO3 voltage: reg 0x94 bits[4:0] = (mV - 500) / 100 -> 28 = 3300 mV.
+    int aldo3 = axp2101.readRegister(0x94);
+    if (aldo3 >= 0) {
+        axp2101.writeRegister(0x94, (uint8_t)((aldo3 & 0xE0) | 28));
     }
-    if(axp2101.getALDO1Voltage() != 3300) {
-        axp2101.setALDO1Voltage(3300);
-        ESP_LOGW("axp2101_init_log","Set ALDO1 to output 3V3");
-    }
-    if(axp2101.getALDO2Voltage() != 3300) {
-        axp2101.setALDO2Voltage(3300);
-        ESP_LOGW("axp2101_init_log","Set ALDO2 to output 3V3");
-    }
-    if(axp2101.getALDO3Voltage() != 3300) {
-        axp2101.setALDO3Voltage(3300);
-        ESP_LOGW("axp2101_init_log","Set ALDO3 to output 3V3");
-    }
-    if(axp2101.getALDO4Voltage() != 3300) {
-        axp2101.setALDO4Voltage(3300);
-        ESP_LOGW("axp2101_init_log","Set ALDO4 to output 3V3");
-    }
-
-    axp2101.setPrechargeCurr(XPOWERS_AXP2101_PRECHARGE_50MA);
-    axp2101.setChargerConstantCurr(XPOWERS_AXP2101_CHG_CUR_500MA);
-    axp2101.setChargerTerminationCurr(XPOWERS_AXP2101_CHG_ITERM_50MA);
+    // Panel reset is a rail power cycle: on -> off -> on with 100 ms gaps.
+    axp2101.enableALDO3();
+    vTaskDelay(pdMS_TO_TICKS(100));
+    axp2101.disableALDO3();
+    vTaskDelay(pdMS_TO_TICKS(100));
+    axp2101.enableALDO3();
 }
 
 void Axp2101_isChargingTask(void *arg) {
@@ -143,3 +136,4 @@ int Axp2101_GetBatteryPercent(void) {
     uint8_t percent = axp2101.getBatteryPercent();
     return percent <= 100 ? (int)percent : -1;
 }
+

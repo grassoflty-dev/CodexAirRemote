@@ -1,4 +1,4 @@
-#include <stdio.h>
+﻿#include <stdio.h>
 #include <string.h>
 #include <freertos/FreeRTOS.h>
 #include <esp_log.h>
@@ -59,7 +59,7 @@ static void bsp_lvgl_rounder_cb(lv_disp_drv_t *disp_drv, lv_area_t *area)
 void Lvgl_PortInit(DisplayPort &display) {
     esp_lv_adapter_config_t cfg = ESP_LV_ADAPTER_DEFAULT_CONFIG();
     /* ESP32-C6 has a single core and no PSRAM: keep the LVGL task lean. */
-    cfg.task_stack_size = 16 * 1024;
+    cfg.task_stack_size = 20 * 1024;
     cfg.task_priority = 8;
     cfg.task_core_id = 0;
     cfg.stack_in_psram = false;
@@ -74,8 +74,8 @@ void Lvgl_PortInit(DisplayPort &display) {
         BSP_LCD_V_RES,
         ESP_LV_ADAPTER_ROTATE_0
     );
-    /* 480 x 40 x 2 bytes = 38 KiB draw buffer, single buffered. */
-    disp_cfg.profile.buffer_height = 40;
+    /* 480 x 8 x 2 bytes = 7.5 KiB draw buffer, single buffered. */
+    disp_cfg.profile.buffer_height = 12;
 	
 	disp = esp_lv_adapter_register_display(&disp_cfg);
     assert(disp != NULL);

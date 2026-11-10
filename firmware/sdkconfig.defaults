@@ -25,15 +25,32 @@ CONFIG_BT_BLE_ENABLED=y
 CONFIG_BT_BLE_42_FEATURES_SUPPORTED=y
 CONFIG_BT_BLE_50_FEATURES_SUPPORTED=n
 
-# Wi-Fi station (voice streaming) and the local HTTPS/WebSocket server
-CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=8
-CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=24
-CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=24
+# Wi-Fi station (voice streaming) and the local HTTPS/WebSocket server.
+# BLE and Wi-Fi never run at the same time (the firmware releases Bluedroid for
+# each voice session), so coexistence is not needed and the C6 has no RAM for it.
+CONFIG_ESP_COEX_SW_COEXIST_ENABLE=n
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=4
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=8
+CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=8
 CONFIG_HTTPD_WS_SUPPORT=y
+CONFIG_HTTPD_MAX_REQ_HDR_LEN=512
 CONFIG_ESP_HTTPS_SERVER_ENABLE=y
+CONFIG_LWIP_MAX_SOCKETS=6
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=2880
+CONFIG_LWIP_TCP_WND_DEFAULT=2880
+# The board only receives short WebSocket control frames; 4 KiB TLS records
+# keep one HTTPS connection inside the ESP32-C6's 512 KiB SRAM.
+CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=1024
+CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=2048
+CONFIG_MBEDTLS_SSL_KEEP_PEER_CERTIFICATE=n
+CONFIG_ESP_TLS_USE_DS_PERIPHERAL=n
+# The hardware AES driver allocates DMA buffers per record; on this board the
+# DMA-capable pool is already shared with the SPI panel, I2S and Wi-Fi, so use
+# the smaller software AES implementation instead. Audio is only 32 kB/s.
+CONFIG_MBEDTLS_HARDWARE_AES=n
 
 # LVGL (managed component lvgl/lvgl 9.x)
-CONFIG_LV_MEM_SIZE=32768
+CONFIG_LV_MEM_SIZE=20480
 CONFIG_LV_ATTRIBUTE_FAST_MEM_USE_IRAM=y
 CONFIG_LV_FONT_MONTSERRAT_20=y
 CONFIG_LV_FONT_MONTSERRAT_28=y

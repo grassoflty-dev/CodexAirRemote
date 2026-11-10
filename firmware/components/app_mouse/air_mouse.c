@@ -71,10 +71,12 @@ static int8_t report_delta(float motion)
 static void mouse_task(void *unused)
 {
     bool running = false, release_pending = true;
+    int64_t release_retry_at = 0;
     uint8_t sent_buttons = 0;
     bool moving_x = false, moving_y = false;
     unsigned known_connection = 0, known_mode = 0;
-    int collected = 0, read_errors = 0, report_tick = 0;
+    int collected = 0, read_errors = 0;
+    unsigned report_tick = 0;
     vec gravity = {0}, bias = {0}, sum_accel = {0}, sum_gyro = {0}, axis = {0};
     float filtered_x = 0, filtered_y = 0, dx = 0, dy = 0;
     int64_t sample_time = esp_timer_get_time(), calibration_started = sample_time;
@@ -88,14 +90,21 @@ static void mouse_task(void *unused)
         if (!connected || known_connection != connection) {
             known_connection = connection;
             release_pending = true;
+            release_retry_at = 0;
             sent_buttons = 0;
             atomic_store(&requested_buttons, 0);
             xQueueReset(button_events);
             dx = dy = 0;
         }
-        if (connected && release_pending && ble_mouse_report(0, 0, 0)) {
-            release_pending = false;
-            sent_buttons = 0;
+        /* The HID host has not necessarily subscribed to reports yet; wait for
+         * the first successful indication instead of retrying every 4 ms. */
+        if (connected && release_pending && now >= release_retry_at) {
+            if (ble_mouse_report(0, 0, 0)) {
+                release_pending = false;
+                sent_buttons = 0;
+            } else {
+                release_retry_at = now + 500000;
+            }
         }
 
         bool wanted = atomic_load(&requested);
@@ -116,6 +125,7 @@ static void mouse_task(void *unused)
             calibration_started = sample_time = now;
             atomic_store(&calibrated, false);
             release_pending = true;
+            release_retry_at = 0;
         }
         if (!running) continue;
 
@@ -178,15 +188,31 @@ static void mouse_task(void *unused)
         }
 
         if (!connected || release_pending || !atomic_load(&calibrated)) continue;
+        /* Before the host enables report notifications there is no point sending
+         * (and the HID library would log an error per attempt); drop the
+         * accumulated motion so the first real report does not jump. */
+        if (!ble_mouse_reports_ready()) {
+            dx = dy = 0;
+            continue;
+        }
+        /* Safety net: if a press/release event was lost (queue reset racing a
+         * touch, report failure during a link drop), re-assert the requested
+         * state every ~2 s instead of leaving a button latched forever. */
         uint8_t buttons = sent_buttons;
-        bool button_event = xQueuePeek(button_events, &buttons, 0) == pdTRUE;
+        bool queued = xQueuePeek(button_events, &buttons, 0) == pdTRUE;
+        bool button_event = queued;
+        uint8_t requested_state = (uint8_t)atomic_load(&requested_buttons);
+        if (!button_event && buttons != requested_state && (report_tick % 500) == 0) {
+            buttons = requested_state;
+            button_event = true;
+        }
         if ((++report_tick % 2) == 0 || button_event) {
             int8_t x = report_delta(dx), y = report_delta(dy);
             if ((x || y || button_event) && atomic_load(&requested) && ble_mouse_report(buttons, x, y)) {
                 dx -= x;
                 dy -= y;
                 sent_buttons = buttons;
-                if (button_event) xQueueReceive(button_events, &buttons, 0);
+                if (queued) xQueueReceive(button_events, &buttons, 0);
             }
         }
     }

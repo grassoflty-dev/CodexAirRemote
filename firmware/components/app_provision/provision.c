@@ -1,7 +1,8 @@
-#include "provision.h"
+﻿#include "provision.h"
 
 #include <stdio.h>
 #include <stdatomic.h>
+#include <stdlib.h>
 #include <string.h>
 #include "driver/usb_serial_jtag.h"
 #include "driver/usb_serial_jtag_vfs.h"
@@ -10,6 +11,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "nvs.h"
+/* Serial voice trigger; declared locally to keep app_voice independent. */
+esp_err_t voice_start(void);
 
 static const char *TAG = "usb_config";
 static const char *KEY = "wifi";
@@ -94,6 +97,11 @@ static void serial_task(void *unused)
                            mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
                 }
                 if (!overflow && strncmp(line, "AR1W ", 5) == 0) set_wifi(line + 5);
+                /* TEMP: start a voice session over USB for memory/protocol
+                 * testing while the touch panel is not being operated. */
+                if (!overflow && strcmp(line, "AR1V") == 0) {
+                    printf("AR1 VOICE %s\n", voice_start() == ESP_OK ? "STARTED" : "BUSY");
+                }
                 length = 0;
                 overflow = false;
                 memset(line, 0, sizeof(line));
@@ -126,3 +134,5 @@ esp_err_t provision_read(wifi_config_t *config)
     if (err != ESP_OK) return err;
     return length == sizeof(config->sta) && config->sta.ssid[0] ? ESP_OK : ESP_ERR_INVALID_SIZE;
 }
+
+

@@ -92,21 +92,16 @@ int DisplayPort::DisplayPort_DispReset(void) {
 } 
 
 void DisplayPort::DisplayPort_TouchInit(void) {
-    const esp_lcd_touch_config_t tp_cfg = {
-        .x_max = (uint16_t)width_,
-        .y_max = (uint16_t)height_,
-        .rst_gpio_num = (gpio_num_t)tp_reset_, 
-        .int_gpio_num = (gpio_num_t)tp_int_,
-        .levels = {
-            .reset = 0,
-            .interrupt = 0,
-        },
-        .flags = {
-            .swap_xy = 1,
-            .mirror_x = 0,
-            .mirror_y = 1,
-        },
-    };
+    esp_lcd_touch_config_t tp_cfg = {};
+    tp_cfg.x_max = (uint16_t)width_;
+    tp_cfg.y_max = (uint16_t)height_;
+    tp_cfg.rst_gpio_num = (gpio_num_t)tp_reset_;
+    tp_cfg.int_gpio_num = (gpio_num_t)tp_int_;
+    tp_cfg.levels.reset = 0;
+    tp_cfg.levels.interrupt = 0;
+    tp_cfg.flags.swap_xy = 1;
+    tp_cfg.flags.mirror_x = 0;
+    tp_cfg.flags.mirror_y = 1;
     esp_lcd_panel_io_handle_t tp_io_handle = NULL;
     esp_lcd_panel_io_i2c_config_t tp_io_config = ESP_LCD_TOUCH_IO_I2C_CST9217_CONFIG();
     tp_io_config.scl_speed_hz = 400000;
@@ -125,6 +120,7 @@ void DisplayPort::Set_Backlight(uint8_t brightness) {
     CMD |= 0x02 << 24;
     esp_lcd_panel_io_tx_param(io_handle, CMD, &bl_val,1);
 }
+
 
 void DisplayPort::Set_Rotate(uint8_t Rotate) {
     uint8_t rot = 0x00;

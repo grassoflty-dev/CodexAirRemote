@@ -1,5 +1,6 @@
 #include "codec_bsp.h"
 
+#include <esp_err.h>
 #include <esp_log.h>
 #include <freertos/FreeRTOS.h>
 
@@ -14,7 +15,13 @@ CodecPort::CodecPort(I2cMasterBus &i2cbus, const char *board_name) : i2cbus_(i2c
     cfg.out_mode = CODEC_I2S_MODE_TDM;
     cfg.in_use_tdm = true;
     cfg.reuse_dev = false;
-    ESP_ERROR_CHECK(init_codec(&cfg));
+    esp_err_t init_result = init_codec(&cfg);
+    if (init_result != ESP_OK) {
+        ESP_LOGE(TAG, "Codec init failed (%s): audio stays unavailable", esp_err_to_name(init_result));
+        playback_ = NULL;
+        record_ = NULL;
+        return;
+    }
 
     playback_ = get_playback_handle();
     record_ = get_record_handle();

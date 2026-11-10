@@ -1,22 +1,24 @@
 idf_component_register(
     SRCS
-        "i2c_bsp.cpp"
+        "board.cpp"
         "display_bsp.cpp"
+        "i2c_bsp.cpp"
         "codec_bsp.cpp"
         "power_bsp.cpp"
+        "lvgl_bsp.cpp"
         "xpowers/XPowersLibInterface.cpp"
     INCLUDE_DIRS
-        "."
+        "include"
         "xpowers"
         "xpowers/REG"
-    # Public headers (user_config.h, display_bsp.h, codec_bsp.h, power_bsp.h)
-    # expose types from these components, so they must be public requirements.
     REQUIRES
         driver
         esp_driver_gpio
         esp_driver_i2c
         esp_driver_spi
         esp_lcd
+        espressif__esp_lvgl_adapter
+        lvgl__lvgl
         codec_board
         waveshare__esp_lcd_touch_cst9217
     PRIV_REQUIRES
