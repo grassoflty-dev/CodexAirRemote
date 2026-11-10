@@ -189,6 +189,11 @@ powershell -ExecutionPolicy Bypass -File .\firmware\Build.ps1
 
 鼠标通过蓝牙直接连接 Windows；语音通过加密的 Wi-Fi 连接把板载录音送到电脑。屏幕顶部显示 BLE 连接状态与 AXP2101 电量；25 秒无操作后自动降低亮度，触摸后恢复。
 
+### 物理按键
+
+- **电源键（PWR）**：长按约 **4 秒**关机，短按开机。板端在启动时把 AXP2101 的 `0x22` 写为 `0x06`（PWRON 长按作为关机源）与 `0x27` 写为 `0x10`（长按 4 秒），与官方 XiaoZhi 板级实现一致。
+- **BOOT / RST**：固件不参与。BOOT 键保持空闲（无自定义功能），RST 为硬件复位。
+
 ### 语音链路
 
 辅助程序把板端 PCM 只送到 **CABLE Input**，并检查 **CABLE Output** 是否为 Windows 默认录音设备。语音目标可在辅助程序里切换：

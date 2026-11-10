@@ -116,3 +116,13 @@ for a hand-held board and timed out after 15 s; they are now 1.0 g / 64 /
 150 samples with a 30 s timeout, and the UI shows
 "Calibrating - hold the board still" and "Calibration failed, tap Gyro and hold
 still" so the state is visible.
+
+## 7. Physical buttons
+
+| Key | Behaviour | Where |
+| --- | --- | --- |
+| PWR | Hold ~4 s to power off, short press to power on | `bsp_board/power_bsp.cpp` `Custom_PmicRegisterInit()`: AXP2101 `0x22 = 0x06` (PWRON long press is a power-off source) and `0x27 = 0x10` (4 s hold). Same values as the vendor example `02_Example/XiaoZhi-v2.2.5/main/boards/waveshare/esp32-c6-touch-amoled-2.16/esp32-c6-touch-amoled-2.16.cc` (Pmic constructor, `WriteReg(0x22, 0b110)` / `WriteReg(0x27, 0x10)`). Verified at boot: `PWRKEY long-press power-off enabled (0x22=6 0x27=16)`. |
+| BOOT (GPIO9) | No firmware function (deliberate: the user only asked for the power key; GPIO9 is also a strapping pin) | — |
+| RST | Hardware reset, firmware not involved | — |
+
+The on-screen Voice/Gyro/A/B buttons are unchanged.
