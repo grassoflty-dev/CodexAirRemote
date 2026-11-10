@@ -66,19 +66,41 @@ void Custom_PmicPortInit(I2cMasterBus *i2cbus,uint8_t dev_addr) {
 }
 
 /*
- * Board bring-up verified on the same hardware by
- * mfellner/esp32-playground components/board/board.cpp (docs/hardware.md):
- * only the panel-reset rail (AXP2101 ALDO3) is touched; charger and unrelated
- * rail registers keep their factory values. Writing DC1/ALDO1/ALDO2/ALDO4 and
- * VBUS limits (as the generic Waveshare example does) is unnecessary and was a
- * suspect for the black panel, so it is deliberately not done here.
+ * Panel bring-up mirrors the vendor 09_LVGL_V9_Test example
+ * (02_Example/ESP-IDF-v5.5.3/09_LVGL_V9_Test/components/pmicpower/power_bsp.cpp):
+ * every rail the AMOLED module can draw from (DC1 and ALDO1/2/3/4) is set to
+ * 3.3 V and explicitly enabled. Touching only the ALDO3 reset rail left the
+ * panel dark even though the SH8601 accepted its initialization commands.
  */
 void Custom_PmicRegisterInit(void) {
-    // ALDO3 voltage: reg 0x94 bits[4:0] = (mV - 500) / 100 -> 28 = 3300 mV.
-    int aldo3 = axp2101.readRegister(0x94);
-    if (aldo3 >= 0) {
-        axp2101.writeRegister(0x94, (uint8_t)((aldo3 & 0xE0) | 28));
-    }
+    ESP_LOGI(TAG, "rails before: DC1=%dmV(%d) ALDO1=%dmV(%d) ALDO2=%dmV(%d) ALDO3=%dmV(%d) ALDO4=%dmV(%d)",
+             axp2101.getDC1Voltage(), axp2101.isEnableDC1(),
+             axp2101.getALDO1Voltage(), axp2101.isEnableALDO1(),
+             axp2101.getALDO2Voltage(), axp2101.isEnableALDO2(),
+             axp2101.getALDO3Voltage(), axp2101.isEnableALDO3(),
+             axp2101.getALDO4Voltage(), axp2101.isEnableALDO4());
+
+    axp2101.setVbusCurrentLimit(XPOWERS_AXP2101_VBUS_CUR_LIM_2000MA);
+
+    if (axp2101.getDC1Voltage() != 3300) axp2101.setDC1Voltage(3300);
+    if (axp2101.getALDO1Voltage() != 3300) axp2101.setALDO1Voltage(3300);
+    if (axp2101.getALDO2Voltage() != 3300) axp2101.setALDO2Voltage(3300);
+    if (axp2101.getALDO3Voltage() != 3300) axp2101.setALDO3Voltage(3300);
+    if (axp2101.getALDO4Voltage() != 3300) axp2101.setALDO4Voltage(3300);
+
+    axp2101.enableDC1();
+    axp2101.enableALDO1();
+    axp2101.enableALDO2();
+    axp2101.enableALDO4();
+
+    axp2101.setPrechargeCurr(XPOWERS_AXP2101_PRECHARGE_50MA);
+    axp2101.setChargerConstantCurr(XPOWERS_AXP2101_CHG_CUR_500MA);
+    axp2101.setChargerTerminationCurr(XPOWERS_AXP2101_CHG_ITERM_50MA);
+
+    ESP_LOGI(TAG, "rails: DC1=%d ALDO1=%d ALDO2=%d ALDO3=%d ALDO4=%d",
+             axp2101.isEnableDC1(), axp2101.isEnableALDO1(), axp2101.isEnableALDO2(),
+             axp2101.isEnableALDO3(), axp2101.isEnableALDO4());
+
     // Panel reset is a rail power cycle: on -> off -> on with 100 ms gaps.
     axp2101.enableALDO3();
     vTaskDelay(pdMS_TO_TICKS(100));

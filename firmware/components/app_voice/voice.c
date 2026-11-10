@@ -37,6 +37,37 @@ extern const uint8_t pairing_txt_start[] asm("_binary_pairing_txt_start");
 static esp_codec_dev_handle_t microphone;
 static StreamBufferHandle_t audio;
 static StaticStreamBuffer_t stream_storage;
+static uint8_t *audio_storage;
+
+/* The PCM ring buffer (16 KiB) is only needed while a voice session runs, and a
+ * voice session never runs at the same time as Bluedroid. Allocating it at boot
+ * permanently stole the memory the BLE controller needs, so it is created when
+ * the session starts and released when the session ends. */
+static esp_err_t audio_open(void)
+{
+    if (audio) return ESP_OK;
+    audio_storage = heap_caps_malloc(BUFFER_BYTES + 1, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    ESP_RETURN_ON_FALSE(audio_storage, ESP_ERR_NO_MEM, TAG, "PCM buffer");
+    audio = xStreamBufferCreateStatic(BUFFER_BYTES + 1, PCM_BYTES, audio_storage, &stream_storage);
+    if (!audio) {
+        heap_caps_free(audio_storage);
+        audio_storage = NULL;
+        return ESP_ERR_NO_MEM;
+    }
+    return ESP_OK;
+}
+
+static void audio_close(void)
+{
+    if (audio) {
+        vStreamBufferDelete(audio);
+        audio = NULL;
+    }
+    if (audio_storage) {
+        heap_caps_free(audio_storage);
+        audio_storage = NULL;
+    }
+}
 static TaskHandle_t voice_worker;
 static atomic_int state, terminal_result, client_fd, end_action;
 static atomic_bool stop_requested, capture_done, capture_allowed, have_ip, wifi_dropped;
@@ -453,6 +484,11 @@ static void voice_task(void *unused)
 {
     for (;;) {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        if (audio_open() != ESP_OK) {
+            ESP_LOGE(TAG, "PCM buffer allocation failed");
+            atomic_store(&state, VOICE_AUDIO_ERROR);
+            continue;
+        }
         xStreamBufferReset(audio);
         sequence = 0;
         atomic_store(&client_fd, -1);
@@ -476,6 +512,7 @@ static void voice_task(void *unused)
                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
         if (result == VOICE_IDLE) result = serve_voice();
         radio_down();
+        audio_close();
         esp_err_t resumed = ble_mouse_resume();
         if (resumed != ESP_OK) ESP_LOGE(TAG, "BT resume failed: %s", esp_err_to_name(resumed));
         ESP_LOGI(TAG, "Voice session ended (%d), heap free %u", result,
@@ -486,10 +523,6 @@ static void voice_task(void *unused)
 
 esp_err_t voice_init(void)
 {
-    uint8_t *storage = heap_caps_malloc(BUFFER_BYTES + 1, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    ESP_RETURN_ON_FALSE(storage, ESP_ERR_NO_MEM, TAG, "PCM buffer");
-    audio = xStreamBufferCreateStatic(BUFFER_BYTES + 1, PCM_BYTES, storage, &stream_storage);
-    ESP_RETURN_ON_FALSE(audio, ESP_ERR_NO_MEM, TAG, "PCM stream");
     return xTaskCreate(voice_task, "voice", 6144, NULL, 5, &voice_worker) == pdPASS ? ESP_OK : ESP_ERR_NO_MEM;
 }
 
