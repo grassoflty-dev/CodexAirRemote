@@ -1,4 +1,4 @@
-# AMOLED bring-up notes (2026-11-10)
+﻿# AMOLED bring-up notes (2026-11-10)
 
 Field notes from the first real-hardware bring-up of the ESP32-C6 firmware on the
 Waveshare ESP32-C6-Touch-AMOLED-2.16. Keep this file short: it exists so the next
@@ -89,10 +89,24 @@ Result: after a reboot (or after flashing a new image) the board advertises and
 reconnects, yet every `esp_hidd_dev_input_set()` fails with "not enabled by
 host", so the cursor never moves and A/B do nothing.
 
-`ble_mouse.c` now stores the CCCD value in NVS (`airremote_ble/ccc`) when the
-host writes it, and restores `reports_ready` on the next connection
-(`restoring CCCD subscription from NVS`). Until that value has been written once,
-the practical workaround is to remove the device in Windows and pair it again.
+Storing a flag is not enough: `esp_hid` checks the GATT server CCCD *attribute*,
+which is cleared on reset. `ble_mouse.c` therefore
+
+1. remembers the CCCD handles (43 and 65 for this HID descriptor) and the
+   subscribed flag in NVS (`airremote_ble/ccc`, `h0`, `h1`) when the host writes
+   the CCCD, and
+2. on every host connection calls
+   `esp_ble_gatts_set_attr_value(handle, 2, {1,0})` before the first report.
+
+Verified boot log after a plain reset, no re-pairing:
+
+```
+I (1899) ble_mouse: BLE HID started
+I (1902) ble_mouse: CCCD load known=1 h0=43 h1=65
+I (2974) ble_mouse: restore CCCD handle=43 -> ESP_OK
+I (2975) ble_mouse: report dx=0 dy=0 btn=00 ret=ok
+I (2976) ble_mouse: restoring CCCD subscription from NVS
+```
 
 ## 6. IMU zero-rate calibration
 

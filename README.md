@@ -207,6 +207,14 @@ powershell -ExecutionPolicy Bypass -File .\firmware\Build.ps1
 
 烧录完成后辅助程序会尝试自动配对。若 Windows 弹出配对提示，确认 **Codex Air Remote**；未自动完成时，点辅助程序里的「蓝牙设置」，在 Windows 蓝牙设置中添加该设备。
 
+配对后的用法：
+
+1. 板子平放在桌面，点屏幕上的 **Gyro**；状态行显示 `Calibrating - hold the board still`。
+2. **保持静止约 1 秒**（零偏校准约 150 个 4 ms 样本），状态行变为 `Mouse active  /  A left, B right`。
+3. 缓慢倾斜板子移动光标；**A = 左键、B = 右键**。再点一次 Gyro 退出鼠标模式。
+
+BLE 的 CCCD（订阅）状态会写入 NVS，并在重连时自动恢复。也就是说**只需配对一次**：之后断电重启、甚至重刷固件（不擦 NVS）都不必重新配对。若曾经用旧固件配对过、重启后光标不动，删除设备重新配对一次即可（详见 [docs/display-bringup-notes.md](docs/display-bringup-notes.md)）。
+
 ## 日常开发
 
 ### VS Code 工作区
