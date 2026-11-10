@@ -1,4 +1,4 @@
-﻿#include <stdio.h>
+#include <stdio.h>
 #include <string.h>
 #include "air_mouse.h"
 #include "app_ui.h"
@@ -16,6 +16,12 @@
 static const char *TAG = "air_remote";
 static bool mouse_ready, voice_ready, ble_ready;
 
+/* TEMP display bisect (remove when the panel issue is closed): bring up only
+ * I2C/PMU, the panel and the UI, skipping NVS/USB provisioning, voice, IMU and
+ * BLE, to find out whether the display path itself is broken or whether one of
+ * the earlier init steps breaks it. */
+#define AIRREMOTE_DISPLAY_ONLY 1
+
 static void log_heap(const char *stage)
 {
     ESP_LOGI(TAG, "heap after %-14s free=%u min=%u", stage,
@@ -30,6 +36,23 @@ void app_main(void)
     ESP_LOGI(TAG, "Flash %lu bytes; internal heap %u bytes free",
              (unsigned long)flash_size, (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
     log_heap("boot");
+#if AIRREMOTE_DISPLAY_ONLY
+    {
+        esp_err_t bus = board_bus_init();
+        ESP_LOGI(TAG, "bisect: bus %s", esp_err_to_name(bus));
+        lv_display_t *display = board_display_start() == ESP_OK ? board_display() : NULL;
+        if (!display) {
+            ESP_LOGE(TAG, "bisect: panel did not start");
+            return;
+        }
+        ESP_LOGI(TAG, "bisect: panel up, heap %u",
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+        bool ok = app_ui_init(display);
+        ESP_LOGI(TAG, "bisect: ui %d, heap %u", (int)ok,
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+        return;
+    }
+#endif
     /* Extra verbose logs while debugging the WebSocket voice path. */
     esp_log_level_set("httpd_ws", ESP_LOG_DEBUG);
     esp_log_level_set("httpd_parse", ESP_LOG_DEBUG);
