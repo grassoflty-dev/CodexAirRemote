@@ -47,6 +47,7 @@ static const char *voice_message(voice_state_t s)
 
 static void mouse_clicked(lv_event_t *event)
 {
+    ESP_LOGI(TAG, "ui: gyro tap");
     last_interaction = lv_tick_get();
     if (voice_busy(voice_state())) return;
     if (mouse_active) {
@@ -62,6 +63,7 @@ static void mouse_clicked(lv_event_t *event)
 
 static void voice_clicked(lv_event_t *event)
 {
+    ESP_LOGI(TAG, "ui: voice tap");
     last_interaction = lv_tick_get();
     if (mouse_active || voice_busy(voice_state())) return;
     mouse_message = voice_ready && voice_start() == ESP_OK ?
@@ -72,7 +74,10 @@ static void action_touch(lv_event_t *event)
 {
     lv_event_code_t code = lv_event_get_code(event);
     bool a = lv_event_get_target(event) == a_button;
-    if (code == LV_EVENT_PRESSED || code == LV_EVENT_SHORT_CLICKED) last_interaction = lv_tick_get();
+    if (code == LV_EVENT_PRESSED || code == LV_EVENT_SHORT_CLICKED) {
+        last_interaction = lv_tick_get();
+        ESP_LOGI(TAG, "ui: %s touch, code %d", a ? "A" : "B", (int)code);
+    }
     if (mouse_active) {
         uint8_t button = a ? MOUSE_LEFT : MOUSE_RIGHT;
         if (code == LV_EVENT_PRESSED) mouse_button(button, true);

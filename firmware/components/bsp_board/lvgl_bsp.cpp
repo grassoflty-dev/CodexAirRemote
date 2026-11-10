@@ -4,6 +4,7 @@
 #include <esp_log.h>
 #include <esp_timer.h>
 #include "lvgl_bsp.h"
+#include <esp_lcd_touch.h>
 #include "esp_lv_adapter.h"
 #include "user_config.h"
 
@@ -93,6 +94,22 @@ void Lvgl_PortInit(DisplayPort &display) {
         esp_lv_adapter_touch_config_t touch_cfg = ESP_LV_ADAPTER_TOUCH_DEFAULT_CONFIG(disp, touch_handle);
         lv_indev_t *touch = esp_lv_adapter_register_touch(&touch_cfg);
         assert(touch != NULL);
+        /* TEMP input diagnosis: log raw CST9217 coordinates so a dead touch
+         * path can be told apart from a wrong coordinate mapping. */
+        static esp_lcd_touch_handle_t probe_handle;
+        probe_handle = touch_handle;
+        xTaskCreate([](void *) {
+            while (true) {
+                uint16_t x[5] = {0}, y[5] = {0}, strength[5] = {0};
+                uint8_t count = 0;
+                esp_err_t err = esp_lcd_touch_get_coordinates(probe_handle, x, y, strength, &count, 5);
+                if (count > 0) {
+                    ESP_LOGI("touch_probe", "%s count=%u x=%u y=%u", esp_err_to_name(err),
+                             count, x[0], y[0]);
+                }
+                vTaskDelay(pdMS_TO_TICKS(100));
+            }
+        }, "touch_probe", 3072, NULL, 4, NULL);
     }
 
 	ESP_ERROR_CHECK(esp_lv_adapter_start());
