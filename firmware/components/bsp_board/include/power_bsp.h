@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <stdbool.h>
 
@@ -10,6 +10,7 @@ void Axp2101_isChargingTask(void *arg);
 
 void Axp2101_SetAldo2(uint8_t vol);
 void Axp2101_SetAldo3(uint8_t vol);
+bool Axp2101_IsAldo3Enabled(void); /* TEMP panel bisect */
 
 /* AXP2101 battery state used by the on-screen battery indicator. */
 bool Axp2101_IsBatteryConnected(void);

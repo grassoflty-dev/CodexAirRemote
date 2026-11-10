@@ -21,6 +21,8 @@ static bool mouse_ready, voice_ready, ble_ready;
  * BLE, to find out whether the display path itself is broken or whether one of
  * the earlier init steps breaks it. */
 #define AIRREMOTE_DISPLAY_ONLY 1
+/* TEMP: write a solid colour straight to the panel and skip LVGL entirely. */
+#define AIRREMOTE_PANEL_DIRECT 1
 
 static void log_heap(const char *stage)
 {
@@ -40,6 +42,14 @@ void app_main(void)
     {
         esp_err_t bus = board_bus_init();
         ESP_LOGI(TAG, "bisect: bus %s", esp_err_to_name(bus));
+#if AIRREMOTE_PANEL_DIRECT
+        esp_err_t probe = board_display_probe_start();
+        ESP_LOGI(TAG, "bisect: probe start %s", esp_err_to_name(probe));
+        if (probe == ESP_OK) {
+            ESP_LOGI(TAG, "bisect: direct fill -> %s", esp_err_to_name(board_panel_fill(0xF800)));
+        }
+        return;
+#else
         lv_display_t *display = board_display_start() == ESP_OK ? board_display() : NULL;
         if (!display) {
             ESP_LOGE(TAG, "bisect: panel did not start");
@@ -51,6 +61,7 @@ void app_main(void)
         ESP_LOGI(TAG, "bisect: ui %d, heap %u", (int)ok,
                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
         return;
+#endif
     }
 #endif
     /* Extra verbose logs while debugging the WebSocket voice path. */

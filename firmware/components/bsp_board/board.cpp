@@ -1,6 +1,7 @@
 ﻿#include "board.h"
 
 #include <esp_log.h>
+#include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
@@ -144,3 +145,34 @@ extern "C" esp_codec_dev_handle_t board_microphone(void)
     return s_codec ? s_codec->microphone() : NULL;
 }
 
+
+/* TEMP panel bisect (remove when the panel issue is closed): push a solid
+ * colour straight to the panel with esp_lcd_panel_draw_bitmap so the SPI path
+ * can be tested without LVGL involved at all. */
+extern "C" esp_err_t board_panel_fill(uint16_t color)
+{
+    if (!s_display) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    static uint16_t strip[480 * 20];
+    for (int i = 0; i < 480 * 20; i++) {
+        strip[i] = color;
+    }
+    esp_lcd_panel_handle_t panel = s_display->Get_PanelHandle();
+    for (int y = 0; y < 480; y += 20) {
+        int64_t t0 = esp_timer_get_time();
+        esp_err_t err = esp_lcd_panel_draw_bitmap(panel, 0, y, 480, y + 20, strip);
+        int64_t dt = esp_timer_get_time() - t0;
+        ESP_LOGI("panel_direct", "draw rows %d-%d -> %s (%lld us)", y, y + 20,
+                 esp_err_to_name(err), (long long)dt);
+        if (err != ESP_OK) {
+            return err;
+        }
+    }
+    ESP_LOGI("panel_direct", "ALDO3 enabled=%d after write",
+             Axp2101_IsAldo3Enabled() ? 1 : 0);
+    vTaskDelay(pdMS_TO_TICKS(500));
+    ESP_LOGI("panel_direct", "panel write done, heap %u",
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+    return ESP_OK;
+}

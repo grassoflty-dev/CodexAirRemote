@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -26,6 +26,7 @@ esp_err_t board_init(void);
 /* Split stages, used by app_main to order BLE ahead of the bigger UI buffers. */
 esp_err_t board_bus_init(void);
 esp_err_t board_display_start(void);
+esp_err_t board_display_probe_start(void); /* TEMP panel bisect: panel only, no touch/LVGL */
 esp_err_t board_audio_init(void);
 
 /* LVGL display created by board_init(), or NULL while unavailable. */
@@ -40,6 +41,9 @@ i2c_master_bus_handle_t board_i2c_bus(void);
 
 /* AMOLED brightness, 0..100. Implemented with the SH8601 0x51 command. */
 esp_err_t board_set_brightness(int percent);
+
+/* TEMP panel bisect: fill the whole panel with an RGB565 colour, bypassing LVGL. */
+esp_err_t board_panel_fill(uint16_t color);
 
 /* AXP2101 battery state; percent is -1 when no battery is attached. */
 bool board_battery_connected(void);
