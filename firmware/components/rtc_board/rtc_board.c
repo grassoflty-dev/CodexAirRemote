@@ -173,6 +173,20 @@ bool rtc_board_present(void)
     return s_present;
 }
 
+/* Current local wall time: the system clock wins once anything (AR1T, SNTP in
+ * the future) has set it, because it keeps running on esp_timer between reads
+ * and never needs I2C; otherwise fall back to the battery-backed RTC. */
+static bool current_local(struct tm *out)
+{
+    time_t ticks = time(NULL);
+    if ((int64_t)ticks >= RTC_MIN_UNIX) {
+        time_t local = ticks + RTC_TZ_OFFSET_SEC;
+        gmtime_r(&local, out);
+        return true;
+    }
+    return s_present && read_fields(out) == ESP_OK && fields_valid(out);
+}
+
 void rtc_board_time_text(char *out, size_t size)
 {
     if (!out || size == 0) {
@@ -183,22 +197,28 @@ void rtc_board_time_text(char *out, size_t size)
         return;
     }
     struct tm now;
-    bool valid = false;
-    /* The system clock wins once anything (AR1T, SNTP in the future) has set
-     * it: it keeps running on esp_timer between reads and never needs I2C. */
-    time_t ticks = time(NULL);
-    if ((int64_t)ticks >= RTC_MIN_UNIX) {
-        time_t local = ticks + RTC_TZ_OFFSET_SEC;
-        gmtime_r(&local, &now);
-        valid = true;
-    } else if (s_present && read_fields(&now) == ESP_OK && fields_valid(&now)) {
-        valid = true;
-    }
-    if (!valid) {
+    if (!current_local(&now)) {
         snprintf(out, size, "--:--");
         return;
     }
     snprintf(out, size, "%02d:%02d", now.tm_hour, now.tm_min);
+}
+
+void rtc_board_date_text(char *out, size_t size)
+{
+    if (!out || size == 0) {
+        return;
+    }
+    if (size < 11) {
+        out[0] = 0;
+        return;
+    }
+    struct tm now;
+    if (!current_local(&now)) {
+        snprintf(out, size, "----/--/--");
+        return;
+    }
+    snprintf(out, size, "%04d/%02d/%02d", now.tm_year + 1900, now.tm_mon + 1, now.tm_mday);
 }
 
 esp_err_t rtc_board_set_unix(int64_t unix_seconds)

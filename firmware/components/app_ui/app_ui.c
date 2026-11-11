@@ -13,15 +13,26 @@
 #include "voice.h"
 
 static const char *TAG = "air_remote";
-static lv_obj_t *clock_label, *ble_label, *battery_label, *status_label, *gyro_button, *voice_button;
+static lv_obj_t *date_label, *clock_label, *bt_label, *battery_label, *status_label;
+static lv_obj_t *gyro_button, *voice_button;
 static lv_obj_t *a_button, *b_button, *a_hint, *b_hint;
+static lv_obj_t *hint_panel, *hint_label;
 static bool mouse_active, mouse_ready, voice_ready, ble_ready;
-static const char *mouse_message = "Tap a mode to begin";
+/* Transient status line. Empty in idle: the old "Tap a mode to begin" hint is
+ * gone, so nothing sits at the bottom of the screen unless something happened. */
+static const char *mouse_message = "";
+static uint32_t mouse_message_until;
 static uint32_t last_interaction, last_battery_update, last_clock_update;
 /* Set by app_ui_refresh_clock() after the host changes the time, so the next
  * render tick (<= 125 ms) repaints instead of waiting for the 1 s cadence. */
 static volatile bool clock_dirty = true;
 static int brightness = -1;
+
+/* Centre popup used for the Gyro calibration feedback. */
+typedef enum { HINT_NONE, HINT_CALIBRATING, HINT_FAILED } hint_mode_t;
+static hint_mode_t hint_mode;
+static uint32_t hint_deadline;
+static bool icon_bt_linked, icon_bt_ready; /* cached so the icon colour only changes on transitions */
 
 static bool voice_busy(voice_state_t s)
 {
@@ -45,8 +56,16 @@ static const char *voice_message(voice_state_t s)
     case VOICE_NETWORK_ERROR: return "Audio connection lost";
     case VOICE_NO_SPEECH:     return "No speech detected";
     case VOICE_SEND_ERROR:    return "Check Codex and PC audio setup";
-    default:                  return "Tap a mode to begin";
+    default:                  return "";
     }
+}
+
+/* Status texts are events, not a permanent hint: auto-clear them so an idle
+ * screen stays clean (only the clock and the icons remain). */
+static void set_message(const char *text)
+{
+    mouse_message = text;
+    mouse_message_until = text[0] ? lv_tick_get() + 3000 : 0;
 }
 
 static void mouse_clicked(lv_event_t *event)
@@ -56,11 +75,11 @@ static void mouse_clicked(lv_event_t *event)
     if (mouse_active) {
         mouse_stop();
         mouse_active = false;
-        mouse_message = "Mouse stopped";
+        set_message("Mouse stopped");
     } else if (mouse_ready && ble_ready && mouse_start() == ESP_OK) {
         mouse_active = true;
     } else {
-        mouse_message = "Mouse hardware unavailable";
+        set_message("Mouse hardware unavailable");
     }
 }
 
@@ -68,8 +87,7 @@ static void voice_clicked(lv_event_t *event)
 {
     last_interaction = lv_tick_get();
     if (mouse_active || voice_busy(voice_state())) return;
-    mouse_message = voice_ready && voice_start() == ESP_OK ?
-                    "Tap a mode to begin" : "PC voice unavailable";
+    set_message(voice_ready && voice_start() == ESP_OK ? "" : "PC voice unavailable");
 }
 
 static void action_touch(lv_event_t *event)
@@ -103,25 +121,52 @@ static void update_label(lv_obj_t *label, const char *value)
     if (strcmp(lv_label_get_text(label), value) != 0) lv_label_set_text(label, value);
 }
 
+/* Centre popup. It is not clickable, so A/B stay usable underneath while the
+ * board settles (the old bottom line told the user to hold still but could be
+ * missed while staring at the cursor). */
+static void show_hint(const char *text, uint32_t auto_hide_ms)
+{
+    if (!hint_panel) return;
+    update_label(hint_label, text);
+    hint_deadline = auto_hide_ms ? lv_tick_get() + auto_hide_ms : 0;
+    lv_obj_set_hidden(hint_panel, false);
+}
+
+static void hide_hint(void)
+{
+    hint_mode = HINT_NONE;
+    hint_deadline = 0;
+    if (hint_panel) lv_obj_set_hidden(hint_panel, true);
+}
+
 static void render(lv_timer_t *timer)
 {
     voice_state_t voice = voice_state();
     bool recording_mode = voice_busy(voice);
     bool linked = ble_mouse_connected();
 
-    /* Wall clock in the old title slot. Sampling once per second keeps the I2C
-     * reads out of the 125 ms path, and update_label() only calls
+    /* Date + time in the top-left corner. Sampling once per second keeps the
+     * I2C reads out of the 125 ms path, and update_label() only calls
      * lv_label_set_text() when the text really changed. */
     if (clock_dirty || lv_tick_elaps(last_clock_update) >= 1000) {
         clock_dirty = false;
         last_clock_update = lv_tick_get();
-        char text[8];
-        rtc_board_time_text(text, sizeof(text));
-        update_label(clock_label, text);
+        char date[16], time[8];
+        rtc_board_date_text(date, sizeof(date));
+        rtc_board_time_text(time, sizeof(time));
+        update_label(date_label, date);
+        update_label(clock_label, time);
     }
 
-    update_label(ble_label, linked ? "BLE connected" : "BLE ready to pair");
-    if (!ble_ready) update_label(ble_label, "BLE unavailable");
+    /* BLE state moved from the removed text line into an icon next to the
+     * battery: bright when the host is connected, dim when it is not. */
+    if (linked != icon_bt_linked || ble_ready != icon_bt_ready) {
+        icon_bt_linked = linked;
+        icon_bt_ready = ble_ready;
+        lv_obj_set_style_text_color(bt_label, linked && ble_ready ? lv_color_white() :
+                                                          lv_color_hex(0x55606e), 0);
+    }
+
     if (lv_tick_elaps(last_battery_update) >= 1000) {
         last_battery_update = lv_tick_get();
         int percent = battery_percent();
@@ -132,17 +177,33 @@ static void render(lv_timer_t *timer)
         }
     }
 
-    /* A failed zero-rate calibration stops the sensor task silently; fold it
-     * back into the idle state so the user sees why the cursor does not move. */
+    /* A failed zero-rate calibration stops the sensor task silently; report it
+     * in the popup and drop back to idle so the button can be retried. */
     if (mouse_active && mouse_failed()) {
         mouse_active = false;
-        mouse_message = "Calibration failed, tap Gyro and hold still";
+        hint_mode = HINT_FAILED;
+        show_hint("Calibration failed, try again", 1500);
     }
-    const char *status = voice != VOICE_IDLE ? voice_message(voice) : mouse_message;
-    if (mouse_active) {
-        status = !mouse_calibrated() ? "Calibrating - hold the board still" :
-                 linked ? "Mouse active  /  A left, B right" : "Pair Codex Air Remote in Windows";
-    } else if (!recording_mode && strcmp(mouse_message, "Tap a mode to begin") != 0) {
+    if (mouse_active && !mouse_calibrated()) {
+        if (hint_mode != HINT_CALIBRATING) {
+            hint_mode = HINT_CALIBRATING;
+            show_hint("Hold the board still...", 0);
+        }
+    } else if (hint_mode == HINT_CALIBRATING) {
+        hide_hint(); /* calibrated, or the user left the mode */
+    }
+    if (hint_deadline && (int32_t)(lv_tick_get() - hint_deadline) >= 0) hide_hint();
+
+    if (mouse_message_until && (int32_t)(lv_tick_get() - mouse_message_until) >= 0) {
+        mouse_message = "";
+        mouse_message_until = 0;
+    }
+    const char *status = "";
+    if (voice != VOICE_IDLE) {
+        status = voice_message(voice);
+    } else if (mouse_active) {
+        status = linked ? "Mouse active  /  A left, B right" : "Pair Codex Air Remote in Windows";
+    } else {
         status = mouse_message;
     }
     update_label(status_label, status);
@@ -277,22 +338,40 @@ bool app_ui_init(lv_display_t *display)
     lv_obj_t *screen = lv_display_get_screen_active(display);
     lv_obj_set_style_bg_color(screen, lv_color_hex(0x0b121d), 0);
     lv_obj_set_style_text_color(screen, lv_color_hex(0xc2cedb), 0);
-    /* Top-left slot: wall clock instead of the old "Codex Air Remote" title.
-     * Same font, colour and position; the text is refreshed in render(). */
+    /* Top-left: date over a large clock, both fed by rtc_board in render().
+     * Montserrat line heights are 30 px at size 28 and 52 px at size 48, so the
+     * two lines with a 4 px gap end at y = 102, clear of the button grid. */
+    date_label = lv_label_create(screen);
+    lv_label_set_text(date_label, "----/--/--");
+    lv_obj_set_style_text_font(date_label, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_color(date_label, lv_color_hex(0x8fa3b8), 0);
+    lv_obj_align(date_label, LV_ALIGN_TOP_LEFT, 24, 16);
     clock_label = lv_label_create(screen);
     lv_label_set_text(clock_label, "--:--");
-    lv_obj_set_style_text_font(clock_label, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_font(clock_label, &lv_font_montserrat_48, 0);
     lv_obj_set_style_text_color(clock_label, lv_color_white(), 0);
-    lv_obj_align(clock_label, LV_ALIGN_TOP_LEFT, 24, 27);
-    ble_label = lv_label_create(screen);
-    lv_obj_align(ble_label, LV_ALIGN_TOP_LEFT, 25, 69);
+    lv_obj_align(clock_label, LV_ALIGN_TOP_LEFT, 24, 50);
+
+    /* Top-right cluster: BLE state icon to the left of the battery readout.
+     * The battery label gets a fixed, wider-than-any-text width so a change
+     * from "100%" to "9%" can never shift it under the icon. */
     battery_label = lv_label_create(screen);
-    lv_obj_align(battery_label, LV_ALIGN_TOP_RIGHT, -25, 69);
-    /* 480 x 480 AMOLED: two 150 px columns centred with a 96 px gutter. */
-    voice_button = make_button(screen, 42, 112, 0x844351);
-    gyro_button = make_button(screen, 288, 112, 0x266e84);
-    a_button = make_button(screen, 42, 252, 0x266e84);
-    b_button = make_button(screen, 288, 252, 0x844351);
+    lv_obj_set_width(battery_label, 110);
+    lv_obj_set_style_text_align(battery_label, LV_TEXT_ALIGN_RIGHT, 0);
+    lv_obj_set_style_text_font(battery_label, &lv_font_montserrat_20, 0);
+    lv_obj_align(battery_label, LV_ALIGN_TOP_RIGHT, -24, 22);
+    bt_label = lv_label_create(screen);
+    lv_label_set_text(bt_label, LV_SYMBOL_BLUETOOTH);
+    lv_obj_set_style_text_font(bt_label, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_color(bt_label, lv_color_hex(0x55606e), 0);
+    lv_obj_align_to(bt_label, battery_label, LV_ALIGN_OUT_LEFT_MID, -8, 0);
+
+    /* 480 x 480 AMOLED: two 150 px columns centred with a 96 px gutter. The
+     * grid moved down now that the BLE text line is gone. */
+    voice_button = make_button(screen, 42, 150, 0x844351);
+    gyro_button = make_button(screen, 288, 150, 0x266e84);
+    a_button = make_button(screen, 42, 300, 0x266e84);
+    b_button = make_button(screen, 288, 300, 0x844351);
     mode_icon(voice_button, true);
     mode_icon(gyro_button, false);
     button_caption(voice_button, "Voice");
@@ -313,7 +392,31 @@ bool app_ui_init(lv_display_t *display)
     lv_obj_set_width(status_label, 420);
     lv_obj_set_style_text_align(status_label, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_long_mode(status_label, LV_LABEL_LONG_WRAP);
-    lv_obj_align(status_label, LV_ALIGN_TOP_MID, 0, 404);
+    lv_obj_align(status_label, LV_ALIGN_TOP_MID, 0, 416);
+
+    /* Calibration popup, hidden until Gyro needs to say something. A plain
+     * object on purpose: lv_msgbox runs its own event loop and would swallow
+     * the touches the user needs for A/B while calibrating. */
+    hint_panel = lv_obj_create(screen);
+    lv_obj_set_size(hint_panel, 300, 120);
+    lv_obj_center(hint_panel);
+    lv_obj_set_style_bg_color(hint_panel, lv_color_hex(0x101a26), 0);
+    lv_obj_set_style_bg_opa(hint_panel, LV_OPA_80, 0);
+    lv_obj_set_style_radius(hint_panel, 18, 0);
+    lv_obj_set_style_border_width(hint_panel, 0, 0);
+    lv_obj_set_style_shadow_width(hint_panel, 0, 0);
+    lv_obj_set_style_pad_all(hint_panel, 16, 0);
+    lv_obj_set_clickable(hint_panel, false);
+    lv_obj_set_scrollable(hint_panel, false);
+    hint_label = lv_label_create(hint_panel);
+    lv_obj_set_width(hint_label, 260);
+    lv_label_set_long_mode(hint_label, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_align(hint_label, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_font(hint_label, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_color(hint_label, lv_color_white(), 0);
+    lv_obj_center(hint_label);
+    lv_obj_set_hidden(hint_panel, true);
+
     last_interaction = lv_tick_get();
     lv_timer_create(render, 125, NULL);
     render(NULL);
