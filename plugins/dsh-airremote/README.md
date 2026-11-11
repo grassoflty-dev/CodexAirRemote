@@ -1,66 +1,79 @@
 # dsh-airremote
 
 DeepSeek Harness 插件：把 **Codex Air Remote**（Waveshare ESP32-C6-Touch-AMOLED-2.16）开发板
-变成 DSH 的语音输入设备——板载麦克风音频经 TLS/WSS 直连插件，本地 whisper.cpp 转写，
-结果写入 DSH 草稿（可编辑、不自动发送）；插件同时负责开发板烧录与串口配网。
+变成 DSH 官方语音输入插件的 **虚拟麦克风**。板载麦克风音频经 TLS/WSS 直连插件 host，
+再通过页面内的合成 `MediaStream` 交给官方 `voice-input`，由官方 SenseVoice 转写并写入草稿。
 
-> 本仓库的 `windows/` 辅助程序是旧方案（Codex 听写 / VB-CABLE），已标记 legacy；
-> 插件是新的交付路径，见 [`../../docs/plugin-dsh-airremote.md`](../../docs/plugin-dsh-airremote.md)。
+> `windows/` 辅助程序是旧方案（Codex 听写 / VB-CABLE），已标记 legacy；插件是新交付路径。
+> 设计与协议细节见 [`../../docs/plugin-dsh-airremote.md`](../../docs/plugin-dsh-airremote.md)。
 
 ## 状态
 
 | 里程碑 | 内容 | 状态 |
 | --- | --- | --- |
-| M1 | 客户端麦克风按钮 + 页内快捷键 + 假 ASR → 草稿注入 | ✅ 代码级完成（类型检查通过），运行时验证待定（安全启动器安装通道） |
-| M2 | host：UDP `AR1A` 发现 + TLS/WSS 47683 语音服务（复用固件 `voice.c` 帧格式） | 🚧 进行中 |
-| M3 | whisper.cpp worker（large-v3/turbo，CUDA）+ 术语表 + LLM 润色 | ⏳ |
+| M-A | host：UDP `AR1A` 发现、TLS/WSS 47683 客户端、`/airremote/audio` 路由、模拟板子 | ✅ 模拟 e2e 通过 |
+| M-B | client：虚拟麦克风 shim（enumerateDevices/getUserMedia、PCM→AudioContext、重连） | ✅ 无头 Chrome 测试通过 |
+| M-C | 删除自有按钮、启用官方 voice-input、设备选 Air Remote、官方按钮→草稿 | ✅ Web GUI 端到端通过 |
+| M3 | whisper.cpp worker | ⏸ 官方 SenseVoice 已覆盖 |
 | M4 | esptool 烧录 + 串口配网 | ⏳ |
 
 ## 架构
 
 ```
-plugins/dsh-airremote/
-├─ package.json        # dsh.bundle.patch + dsh.client(platform: web, inject …)
-├─ cordis.patch.yml    # 把插件插入 profile 的 cordis 配置
-└─ src/
-   ├─ index.ts         # host 入口（生命周期 + 设置）
-   ├─ config.ts        # 设置默认值（模型/术语表/端口/烧录参数）
-   ├─ shortcut.ts      # 页内快捷键和弦解析（改编自 dsh-ears，MIT）
-   └─ client/
-      ├─ index.ts      # 注册 conversation.input.right / conversation.input.dock
-      ├─ AirRemoteButton.tsx  # 麦克风按钮（点击或 Ctrl+Shift+Space）
-      ├─ AirRemoteBar.tsx     # 录音/识别状态条
-      └─ voice-state.ts       # 客户端语音状态
+ESP32-C6 ──WSS 47683──▶ host（TLS 客户端 + UDP 47682 发现）
+                           │ dsh-host-webserver upgrade 路由 /airremote/audio
+                           ▼
+浏览器 ◀── WebSocket ── client shim（16k s16le → AudioBuffer → AudioContext）
+                           ▼
+              createMediaStreamDestination().stream（deviceId=airremote）
+                           ▼
+   官方 voice-input：getUserMedia → MediaRecorder → SenseVoice → 草稿
 ```
 
-M1 假 ASR：点击按钮或按 `Ctrl+Shift+Space` → 1 秒后把固定文本写入 composer 草稿，
-用于验证"插件 → 草稿注入"链路。M2 起把音频源换成板子 WSS PCM，M3 换成 whisper worker 转写。
+插件不注册自己的麦克风按钮；`conversation.input.dock` 只保留一条“Air Remote”状态提示。
 
-## 安装（必须走安全启动器）
-
-插件安装必须通过 DSH 安全启动器端点（见 `~/.dsh/AGENTS.md`），不要直接改 profile：
-
-```powershell
-# 端点由 DSH 运行时提供（示例；端口以实际 DSH 服务为准）
-POST http://127.0.0.1:<dsh-port>/dsh-safe-launch/install-plugin
-{"source": "dsh-airremote"}   # 或本地开发用 dsh-airremote 的 npm 包 / 本地路径
-```
-
-> 当前桌面会话的 `desktop` profile 未启用 `dsh-safe-launch` 插件，端点为 404；
-> 运行时验证需用户使用 `web` profile（含安全启动器）或明确授权后安装。
-
-## 开发
+## 安装
 
 ```powershell
 cd plugins/dsh-airremote
-pnpm install        # 需要 @deepseek-ai/dsh-client-* 等 peer 依赖（npm registry）
-pnpm build          # tsdown + 类型声明
-pnpm check          # tsc --noEmit
+npm install
+npm run check
+npm run build
 ```
+
+然后必须走 DSH 插件管理安装（不要手工改 profile）：
+
+```text
+plugin_manager install_bundle  link:D:\C-Develop\CodexAirRemote\plugins\dsh-airremote
+plugin_manager set_bundle      @deepseek-ai/dsh-experimental-voice-input-bundle  enabled=true
+```
+
+在官方语音输入设置里把输入设备选为 **Air Remote (ESP32-C6)**。
+
+## 数据目录
+
+`%USERPROFILE%\.dsh\airremote\`：
+
+- `pairing.txt`：固件 `pairing.txt` 的 64 字符 token（秘密）；
+- `server.crt`：板子自签名证书（TLS pin；缺失则不校验）；
+- `simulate`：存在即启用模拟板子；
+- `sim.wav`：模拟板子循环的 16 kHz mono WAV。
+
+真实板子使用前先在板子上点 **Voice**（或 USB 发 `AR1V`），让板子进入语音会话并广播。
+
+## 测试
+
+```powershell
+npm test           # host + client bundle + 无头 Chrome MediaRecorder
+npm run test:e2e   # 需要本机 DSH 已运行/已装插件/官方 voice-input 已启用/模型已缓存
+```
+
+`test:e2e` 使用 `~/.dsh/.credentials.yaml` 的 browser-session secret 自签 cookie，在独立无头
+Chrome 里打开 Web GUI，点官方麦克风，模拟板子 PCM，读回 SenseVoice 写入的草稿。
 
 ## 复用与许可
 
-- `src/shortcut.ts` 改编自 [dsh-ears](https://github.com/WizisCool/dsh-ears)（MIT，Copyright (c) JUNZE），
-  保留原协议与匹配语义；修改点见文件头注释。
-- 后续 M2–M4 计划复用 dsh-ears 的 whisper worker/protocol/模型管理思路（同样 MIT），
-  使用时保留版权与来源说明，见仓库根 `THIRD_PARTY_NOTICES.md`。
+- `src/host/ws.ts` 是自包含的 RFC 6455 子集（握手/掩码/文本/二进制/ping/close），不引入运行时依赖。
+- 早期 M1 的快捷键解析改编自 [dsh-ears](https://github.com/WizisCool/dsh-ears)（MIT，
+  Copyright (c) JUNZE）；M-C 后已删除自有按钮与快捷键，仅保留许可记录。
+- 协议与 `firmware/components/app_voice/voice.c` 完全一致；模型/识别由官方 SenseVoice 提供。
