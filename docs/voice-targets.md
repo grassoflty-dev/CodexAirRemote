@@ -1,7 +1,8 @@
-# 语音目标：Codex / DeepSeek Harness（DSH）
+# 语音目标：Codex（已退役）/ DeepSeek Harness（DSH，插件主路径）
 
-> 状态：2026-11-09 代码轮完成（未实机）。目标切换、路由、离线测试已就绪；
-> DSH 侧依赖用户一次性配置，实机验收步骤见 [`pending-hardware-validation.md`](pending-hardware-validation.md)。
+> **⚠️ Codex 语音目标已退役（2026-11-10）**：Codex 使用它自己的听写快捷键（`composer.toggleDictation` / 全局听写），本项目不再通过 UIA / VB-CABLE 驱动 Codex。
+> **DSH 走新插件 [`plugins/dsh-airremote`](../plugins/dsh-airremote/README.md)**：板端 PCM 直连插件 host、本地 whisper 转写后写入 DSH 草稿，设计见 [plugin-dsh-airremote.md](plugin-dsh-airremote.md)。
+> 本文件以下内容仅作为旧 companion 方案的历史记录保留。
 
 ## 1. 现状分析
 

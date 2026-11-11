@@ -1,9 +1,10 @@
 # Codex Air Remote
 
-Codex Air Remote 把一块带触摸屏的 ESP32 开发板变成 Codex 的无线输入设备：板载麦克风把语音送到 Windows，再由 **Codex 桌面听写**（默认）或 **DeepSeek Harness 语音输入**（实验，可在辅助程序内切换）转成文字；切到陀螺仪模式后，开发板又变成一只蓝牙空中鼠标。仓库包含两个可以独立构建、运行时互相配合的软件：
+Codex Air Remote 把一块带触摸屏的 ESP32 开发板变成 **DeepSeek Harness（DSH）** 的无线语音输入设备：板载麦克风音频经 TLS/WSS **直连 DSH 插件** `plugins/dsh-airremote`，由插件在本机用 whisper.cpp 转写并写入 DSH 草稿（**不经 VB-CABLE**）；切到陀螺仪模式后，开发板又变成一只蓝牙空中鼠标。仓库包含：
 
-- **Windows 辅助程序**（`windows/`）：Tkinter 图形界面、USB 烧录与 Wi-Fi 配网、VB-CABLE 虚拟麦克风音频路由、可切换语音目标（Codex / DeepSeek Harness）、Windows 2.4 GHz 热点、蓝牙鼠标配对。
-- **ESP32-C6 固件**（`firmware/`）：面向微雪 ESP32-C6-Touch-AMOLED-2.16 的触屏界面、蓝牙 HID 鼠标、Wi-Fi/HTTPS/WebSocket 语音链路、USB Serial/JTAG 配网。
+- **DSH 插件 `dsh-airremote`**（`plugins/dsh-airremote/`，**项目主交付路径**）：麦克风按钮 + 页内快捷键 + 草稿注入（M1 代码级完成）；板子直连、本地 whisper 模型、烧录与配网（M2–M4 进行中）。设计与路线图见 [`docs/plugin-dsh-airremote.md`](docs/plugin-dsh-airremote.md)。
+- **ESP32-C6 固件**（`firmware/`）：面向微雪 ESP32-C6-Touch-AMOLED-2.16 的触屏界面、蓝牙 HID 鼠标、Wi-Fi/HTTPS/WebSocket 语音链路、USB Serial/JTAG 配网；语音协议由插件 host 接收。
+- **旧 Windows 辅助程序**（`windows/`，**legacy / 已退役**）：Codex 语音、VB-CABLE、UIA 点击路径不再维护，仅保留代码与历史记录；**Codex 语音支持已取消**（Codex 可使用其自带听写快捷键），新链路由 DSH 插件承担。
 
 本仓库**唯一活动固件是 `firmware/`**（Waveshare **ESP32-C6**-Touch-AMOLED-2.16，SH8601 480×480，ESP-IDF v5.5.5）。迁移前的 ESP32-S3 工程**已移出仓库**，仅在本机 `archive_local/` 保留归档，不参与构建、也不随仓库分发。C6 版本已在实机上验证到启动、显示/触摸、语音握手与音频帧，鼠标/按键与完整语音 E2E 的待实测项见 [`docs/pending-hardware-validation.md`](docs/pending-hardware-validation.md)；迁移前的本机验证记录见 [TEST_REPORT.md](TEST_REPORT.md)。
 
@@ -316,3 +317,7 @@ cd windows
 ESP-IDF、工具链、受管组件、Python 依赖等均可从官方获取，**不入库**；克隆后如何准备见
 [`docs/development-environment.md`](docs/development-environment.md)（含 ESP-IDF v5.5.5、EIM、VS Code 扩展、
 managed components、Python 3.12、VB-CABLE 等官方链接）。
+
+## dsh-airremote 插件（新交付路径）
+
+**项目主路径已切换为 DSH 插件** [`plugins/dsh-airremote`](plugins/dsh-airremote/README.md)：开发板语音直连、本地 whisper 转写、烧录与配网；原 `windows/` 辅助程序（Codex 语音 / VB-CABLE / UIA）标记为 **legacy（已退役）**，仅保留代码与历史。设计与路线图见 [`docs/plugin-dsh-airremote.md`](docs/plugin-dsh-airremote.md)。

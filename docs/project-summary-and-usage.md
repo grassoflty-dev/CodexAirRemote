@@ -9,12 +9,14 @@
 
 ### 1.1 这是什么
 
-**Codex Air Remote**：把微雪 **ESP32-C6-Touch-AMOLED-2.16** 开发板变成 Codex 的无线输入设备。
+**Codex Air Remote**：把微雪 **ESP32-C6-Touch-AMOLED-2.16** 开发板变成 **DeepSeek Harness（DSH）** 的无线语音输入设备。
 
-- **Windows 辅助程序**（`windows/`，Python 3.12 + Tkinter）：USB 烧录与 Wi-Fi 配网、TLS/WSS 语音桥、
-  VB-CABLE 虚拟麦克风路由、语音目标切换（Codex 桌面听写 / DeepSeek Harness）、2.4 GHz 热点管理、蓝牙鼠标配对。
+- **DSH 插件 `dsh-airremote`**（`plugins/dsh-airremote/`，**主交付路径**）：麦克风按钮 + 页内快捷键 + 草稿注入（M1 代码级完成）；
+  板子语音直连、本地 whisper 模型、烧录与配网（M2–M4 进行中）。设计见 [`plugin-dsh-airremote.md`](plugin-dsh-airremote.md)。
 - **ESP32-C6 固件**（`firmware/`，ESP-IDF 5.5.5）：480×480 LVGL 触屏界面、BLE HID 空中鼠标（QMI8658）、
   按钮 A/B（鼠标左右键 / 语音发送取消）、Wi-Fi + TLS1.2 + WebSocket 语音链路、USB Serial/JTAG 配网命令。
+- **旧 Windows 辅助程序**（`windows/`，**legacy / 已退役**）：Codex 语音、VB-CABLE、UIA 点击路径不再维护；
+  **Codex 语音支持已取消**，仅保留代码与历史记录。
 - 迁移前的 S3 归档工程**已移出仓库**（本机 `archive_local/firmware_s3/`，不参与构建）。
 
 ### 1.2 硬件

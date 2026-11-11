@@ -61,7 +61,8 @@
 
 ## 5. 当前项目速览
 
-- `windows/`：Windows 辅助程序（Python，Codex 语音桥、配网/烧录工具）。
-- `firmware/`：ESP32-C6-Touch-AMOLED-2.16 固件（ESP-IDF 5.5.5）。
+- `plugins/dsh-airremote/`：**主交付路径** —— DSH 插件（板子语音直连 + 本地 whisper 转写 + 烧录/配网）；M1 代码级完成，M2 进行中。
+- `firmware/`：ESP32-C6-Touch-AMOLED-2.16 固件（ESP-IDF 5.5.5），语音协议供插件 host 使用。
+- `windows/`：**legacy（已退役）** —— 旧 Codex 语音/VB-CABLE/UIA 辅助程序，仅保留代码与历史，不再作为交付路径。
 - `archive_local/firmware_s3/`：原 S3 工程归档（本机保留，不在仓库跟踪，不参与开发）。
 - 开发环境、组件清单、迁移记录见 `README.md`、`docs/components.md`、`docs/firmware-c6-migration.md`。

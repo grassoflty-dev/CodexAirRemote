@@ -1,4 +1,7 @@
-# Windows 辅助程序
+# Windows 辅助程序（legacy / 已退役）
+
+> **⚠️ Legacy（已退役）**：本目录是旧的 **Codex 语音 / VB-CABLE / UIA** 辅助程序，不再作为交付路径维护。
+> 新主路径是 DSH 插件 [`plugins/dsh-airremote`](../plugins/dsh-airremote/README.md)：开发板语音直连 DSH、本地 whisper 转写写草稿，不经 VB-CABLE；设计见 [`docs/plugin-dsh-airremote.md`](../docs/plugin-dsh-airremote.md)。
 
 `windows/` 是 Codex Air Remote 的 Windows 侧程序，使用 **Python 3.12 + Tkinter**，由 **PyInstaller** 打包为 onedir 形式的 EXE。它负责把开发板接进 Codex：烧录固件、写入 Wi-Fi 配置、维持与板端的加密音频连接、把板载录音送到 VB-CABLE 虚拟麦克风，并按控件名称触发 Codex 桌面听写。板端固件的说明见 [../firmware/README.md](../firmware/README.md)，整体架构见 [../README.md](../README.md)。
 
