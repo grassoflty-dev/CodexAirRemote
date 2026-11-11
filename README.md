@@ -294,12 +294,14 @@ cd windows
 
 ## 迁移与验证状态
 
-- **已验证**：`firmware/Build.ps1` 在 ESP-IDF 5.5.5 + ESP32-C6 下编译干净（0 error / 0 warning，应用约 2.3 MB，8 MB 应用分区占用约 28%）并生成 4 镜像与 `airremote-release.json`；实机烧录后 `AR1 READY 7`、显示/触摸/PMU/音频/IMU 正常；语音链路实测到 `UDP 发现 → TLS 1.2 → WebSocket → AUTH/READY2 → CAPTURE/GO → 麦克风 PCM 帧`；`windows/Flash.cmd --check` 通过；Windows 侧单元测试（14/14）与 `offline_check.py` 双目标协议检查通过；`Build-App.ps1` 可重新打包 EXE。
-- **2026-11-09 修复（待实机复核）**：BLE HID 因缺少 `esp_ble_gatts_register_callback(esp_hidd_gatts_event_handler)` 而从不广播（Windows 搜不到设备）——已修复；同步加固 BLE release/resume 幂等、A/B 按键防卡键对账、鼠标失败复位；语音会话期间关闭 Wi-Fi modem sleep 以修复 `PULL` 往返延迟导致的 PCM 缓冲溢出；发现改为板端单播 `AR1A` + PC 端 47682 监听。
-- **2026-11-09 新增语音目标切换（待实机复核）**：辅助程序内可切换 `codex` / `dsh`（热切换），DSH 侧复用 VB-CABLE 作为其麦克风、由 DSH 本机 SenseVoice 转写；Codex 路径保持原样，非法/缺失配置回退 Codex。设计与限制见 [docs/voice-targets.md](docs/voice-targets.md)。
-- **仍待实测**：触摸方向、麦克风通道、亮度命令、无 PSRAM 内存余量、BLE 配对与鼠标/按键手感、语音完整 E2E；
-  Codex 听写保持原流程实测，DSH 目标还需在 DSH 中准备 SenseVoice 模型、选择 CABLE Output 后验证（自动点击/手动回退两种路径）。
-  逐项步骤、期望日志与 Windows 侧观察点见 [docs/pending-hardware-validation.md](docs/pending-hardware-validation.md)。
+- **当前状态总览**：见 [`docs/status.md`](docs/status.md)（滚动更新，含证据与阻塞项）。
+- **已验证（2026-11-12）**：本机 + `env/` 内 IDF 构建 0 error；待机页（60 s / 80% 背光 / 大时钟每秒走字 / 触摸唤醒）✅；
+  RTC + 时区（`AR1T`/`AR1Z`，开机 `display … tz +480`）✅；陀螺仪方向/滚转/yaw 与"动一会儿就不动"（HID 16 ms + 失败容错/CCC 重武装）✅；
+  语音会话 BLE 释放→PCM 分配顺序与失败回滚（`hold -voice` 释放、BLE 恢复）✅；插件内置固件已升 **v0.4.1**。
+- **阻塞**：语音 AUTH/READY2 未达成——板端连不上 Windows 热点，`reason 210 = NO_AP_FOUND_W_COMPATIBLE_SECURITY`，且 companion 未运行；
+  待用户选择「换成可用 2.4 GHz 路由器 AP / 允许调整热点安全模式 / 暂缓」。
+- **仍待实测**：语音 AUTH 之后的上行链路、插件烧录与「开发板时间」真机回归、BLE 0x13 重连（若再现先删设备重配）。
+  逐项步骤、期望日志与回退方案见 [docs/pending-hardware-validation.md](docs/pending-hardware-validation.md)。
 - ESP32-S3 → ESP32-C6 的改动、引脚表、镜像地址约定和未实机验证的风险点，见 [docs/firmware-c6-migration.md](docs/firmware-c6-migration.md)。
 - [TEST_REPORT.md](TEST_REPORT.md) 是迁移前（ESP32-S3 时代）的本机验证记录，其中本地语音识别等章节对应已移除的功能，不代表当前 C6 版本的状态。
 
