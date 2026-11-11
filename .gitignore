@@ -56,3 +56,5 @@ desktop.ini
 /plugins/*/node_modules/
 /plugins/*/lib/
 
+
+/plugins/*/test/dist/
