@@ -19,6 +19,7 @@ void app_ui_refresh_clock(void);
 /* Temporary test hook: a script cannot press the panel, so the USB console
  * (AR1S/AR1S TAP) injects the same input-device press a finger produces.
  * Set to 0 to compile the console side out. */
+/* TODO(发布前): 改成 0 —— 该宏会编入 AR1S / AR1S TAP / AR1B GYRO|VOICE 三个临时调试命令。 */
 #define APP_UI_STANDBY_TEST_HOOK 1
 
 /* True while the black standby page with the big clock is showing. */

@@ -260,6 +260,31 @@ C6 没有 PSRAM，所有缓冲都在 512 KB 内部 SRAM 中，是整个移植最
 启动日志会打印 `heap after <阶段> free=... min=...`；出现内存不足时优先降低语音缓冲、LVGL 缓冲高度或字体数量，而不是增大栈。
 Wi-Fi 与 BLE 交替使用是本项目在 512 KB 无 PSRAM 下的核心约束：鼠标模式只开 BLE，语音模式释放 BLE 换 Wi-Fi/TLS，两者不要同时常驻。
 
+## 已知问题与待办
+
+### 语音会话起不来（尚未修复）
+
+**现象**：点 Voice（或 USB 发 `AR1V`）后语音会话建立不起来，串口日志停在
+`PCM buffer allocation failed`，不会进入 `AUTH`/`READY2`。
+
+**根因**：`voice_task` 里顺序是「先 `audio_open()` 申请 16 KB 连续块，再 `ble_mouse_release()`」。
+BLE 起来后内部堆碎片化，16 KB 连续块拿不到，`audio_open()` 直接失败；要等 BLE 释放出的那约
+52 KB 才够用，但释放排在申请之后，形成死结。
+
+**已验证与待机页改动无关**：把待机页相关改动 `git stash` 掉、烧 HEAD 基线固件复测，同样失败。
+所以待机页不需要为此回退。
+
+**待修方案（未实施）**：把 `ble_mouse_release()` 挪到 `audio_open()` 之前——先释放 BLE 腾出连续堆，
+再申请 PCM 缓冲。**用户已决定暂不修**，本轮不动 `voice.c`，只记录结论。
+
+**影响**：待机页的「语音占用」（`APP_BUSY_VOICE`）目前只有 `app_busy` 占用模型的日志验证
+（进入语音时 busy 位置起、60 秒待机计时停走），**没有跑通一次真实语音会话**；待修好后再补端到端实测。
+
+### 发布前必须关掉待机页调试钩子
+
+`components/app_ui/app_ui.h` 的 `APP_UI_STANDBY_TEST_HOOK` 发布前必须改成 **0**，否则会带上
+`AR1S` / `AR1S TAP` / `AR1B GYRO|VOICE` 这三个临时调试命令（见「USB 控制台与配网」命令表）。
+
 ## 常见问题
 
 | 现象 | 处理 |

@@ -146,6 +146,16 @@ UTC+1 柏林 / UTC+8 北京 / UTC+9 东京）加一个「同步到开发板」�
   9. 收尾发 `loader.after('hard_reset')` 硬复位；`finally` 里先关浏览器侧串口（5 秒超时兜底），
      再 `POST /airremote/serial-hold {"holder":"none"}` 释放，异常路径也不会把板子锁住。
 
+### 两套版本号：插件版本 ≠ 固件版本
+
+- **插件版本**：`plugins/dsh-airremote/package.json` 的 `version`（当前 `0.2.0`）。指插件**自身**
+  （host / client / 路由）的版本，按 npm 包语义演进，`npm install` 与插件管理安装看的是它。
+- **固件版本**：`plugins/dsh-airremote/firmware/manifest.json` 的 `version`（当前 `0.4.0`）。指**随包
+  内置的 ESP32-C6 固件**版本，显示在设置页「固件烧录 / 固件 v0.4.0」，烧录前的 sha256 校验和二次确认
+  用的也是它。
+- 两者**故意解耦**：改插件代码不动固件版本，重打固件也不动插件版本，各自独立演进。所以打新固件时
+  务必用 `--version` 显式给固件版本（见下文），别拿 `package.json` 的插件版本当固件版本。
+
 ### 前提：Chromium 内核 + 安全上下文
 
 - Web Serial 只在 **Chromium 内核**（Chrome / Edge）且**安全上下文**下可用。`http://127.0.0.1:57648`
@@ -172,8 +182,13 @@ UTC+1 柏林 / UTC+8 北京 / UTC+9 东京）加一个「同步到开发板」�
 ```powershell
 idf -C firmware build
 cd plugins/dsh-airremote
-node scripts/bundle-firmware.mjs --version 0.4.0   # 必须显式给版本号，否则 manifest 写脚本内置的旧默认值
+node scripts/bundle-firmware.mjs --version 0.4.0   # 打固件时显式给固件版本
 ```
+
+版本号不再有脚本内置默认值，来源优先级：`--version <semver>` > 环境变量
+`AIRREMOTE_FIRMWARE_VERSION` > `plugins/dsh-airremote/package.json` 的 `version`（即插件版本）。
+三者都没有就报错退出；只想确认取到哪个版本、不生成镜像，可加 `--print-version`。
+注意兜底来源是**插件版本**（`0.2.0`），与固件版本别混用（见「两套版本号」），发布固件请按上面显式给版本。
 
 脚本做的事：跑 `idf -C firmware merge-bin`（失败回落到 `python -m esptool merge_bin`），把
 `firmware/build/merged-binary.bin`（`4,576,896` 字节）拷成

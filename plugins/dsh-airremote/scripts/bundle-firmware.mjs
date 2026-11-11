@@ -8,11 +8,15 @@
  *
  * 用法（仓库根或任意目录均可）：
  *   node plugins/dsh-airremote/scripts/bundle-firmware.mjs
- *   node plugins/dsh-airremote/scripts/bundle-firmware.mjs --version 0.3.0
+ *   node plugins/dsh-airremote/scripts/bundle-firmware.mjs --version 0.4.0
+ *   node plugins/dsh-airremote/scripts/bundle-firmware.mjs --print-version   # 只打印解析结果，不生成镜像
  *
  * 环境变量：
  *   AIRREMOTE_REPO_ROOT         仓库根（默认由脚本位置推出）
- *   AIRREMOTE_FIRMWARE_VERSION  固件语义版本（默认 0.3.0）
+ *   AIRREMOTE_FIRMWARE_VERSION  固件语义版本（覆盖 package.json 的 version）
+ *
+ * 版本号单一来源，优先级：--version > AIRREMOTE_FIRMWARE_VERSION >
+ * plugins/dsh-airremote/package.json 的 `version`。三者都没有就报错退出。
  *
  * 合并来源与偏移以 `firmware/build/flash_args` 为准（当前：bootloader 0x0、
  * partition-table 0x8000、ota_data 0x10d000、app 0x200000）。
@@ -32,13 +36,13 @@ import {
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const DEFAULT_VERSION = '0.3.0'
 const DEFAULT_CHIP = 'esp32c6'
 const MERGED_NAME = 'codex_air_remote-merged.bin'
 const MANIFEST_NAME = 'manifest.json'
 
 const scriptDir = dirname(fileURLToPath(import.meta.url))
 const pluginRoot = resolve(scriptDir, '..')
+const packageJsonPath = join(pluginRoot, 'package.json')
 const repoRoot = process.env.AIRREMOTE_REPO_ROOT?.trim() || resolve(pluginRoot, '..', '..')
 const firmwareProject = join(repoRoot, 'firmware')
 const buildDir = join(firmwareProject, 'build')
@@ -57,12 +61,40 @@ function info(message) {
   console.log(`[bundle-firmware] ${message}`)
 }
 
-/** 命令行参数：`--version <semver>`。 */
+/** 兜底来源：插件自身 package.json 的 `version`（脚本按自身位置推路径，不写死绝对路径）。 */
+function versionFromPackageJson() {
+  if (!existsSync(packageJsonPath)) {
+    fail(`找不到插件 package.json：${packageJsonPath}；请用 --version <semver> 或环境变量 AIRREMOTE_FIRMWARE_VERSION 指定固件版本`)
+  }
+  let parsed
+  try {
+    parsed = JSON.parse(readFileSync(packageJsonPath, 'utf8'))
+  } catch (error) {
+    fail(
+      `解析 package.json 失败：${packageJsonPath}（${error instanceof Error ? error.message : String(error)}）；` +
+        '请用 --version <semver> 或环境变量 AIRREMOTE_FIRMWARE_VERSION 指定固件版本'
+    )
+  }
+  const version = typeof parsed?.version === 'string' ? parsed.version.trim() : ''
+  if (version === '') {
+    fail(
+      `package.json 里没有 version 字段：${packageJsonPath}；` +
+        '请补上 version，或用 --version <semver> / 环境变量 AIRREMOTE_FIRMWARE_VERSION 指定固件版本'
+    )
+  }
+  return version
+}
+
+/** 版本号单一来源：`--version <semver>` > `AIRREMOTE_FIRMWARE_VERSION` > package.json 的 version。 */
 function readVersionArg() {
   const index = process.argv.indexOf('--version')
-  const fromArg = index >= 0 ? (process.argv[index + 1] ?? '').trim() : ''
+  if (index >= 0) {
+    const fromArg = (process.argv[index + 1] ?? '').trim()
+    if (fromArg === '') fail('--version 后面缺少版本号，例如：--version 0.4.0')
+    return fromArg
+  }
   const fromEnv = (process.env.AIRREMOTE_FIRMWARE_VERSION ?? '').trim()
-  return fromArg !== '' ? fromArg : fromEnv !== '' ? fromEnv : DEFAULT_VERSION
+  return fromEnv !== '' ? fromEnv : versionFromPackageJson()
 }
 
 /** 跑一条 PowerShell，返回 stdout（`idf` 是 activate.ps1 里的函数，只能在那个会话里用）。 */
@@ -116,6 +148,11 @@ function newestMergedCandidate() {
 
 function main() {
   const version = readVersionArg()
+  /* 只验证版本解析，不碰 build/ 与插件包里的镜像，便于本地单测这条逻辑。 */
+  if (process.argv.includes('--print-version')) {
+    console.log(version)
+    return
+  }
   const appBin = join(buildDir, 'codex_air_remote.bin')
 
   if (!existsSync(firmwareProject)) fail(`找不到固件工程：${firmwareProject}`)
