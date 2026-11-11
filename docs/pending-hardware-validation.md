@@ -231,3 +231,23 @@ I (xxx) ble_mouse: BLE advertising started
 | 5 | 陀螺仪上下方向 | 前后倾斜 | 上下方向与手势一致（screen_normal/VERTICAL_SIGN 已同时修正） |
 | 6 | 校准容差 | 手抖状态下点 Gyro 并保持大致静止 | 不再频繁重置，6 s 内完成校准 |
 | 7 | 退出 Gyro 稳定性 | 反复进入/退出 Gyro 10 次（BLE 已连接） | 无 Guru/Store access fault；若仍崩溃记录日志与复现步骤（栈已加到 6 KiB，属可疑项） |
+
+
+## 12. 陀螺仪验收结果（2026-11-11，已通过）
+
+| 项目 | 结果 |
+| --- | --- |
+| 上下方向（按键侧下压 → 向下） | ✅ 通过（`VERTICAL_SIGN=+1`） |
+| 滚转（按键-USB 轴扭转） | ✅ 通过（roll-invariant 轴，不产生位移） |
+| 左右（yaw） | ✅ 通过（方向正确） |
+| "动一会儿就不动" | ✅ 已修复（报告周期 16 ms + 失败容错/CCC 重武装；`sent` 持续增长至 1329+，`drop=0`，无 notify 失败） |
+| 诊断日志 | 已用 `AIR_MOUSE_DIAGNOSTICS` 宏关闭，默认发布不带 200 ms 诊断；现场排查时置 1 |
+
+### 仍待实测
+
+| 项目 | 说明 |
+| --- | --- |
+| 语音 AR1V / AUTH | 顺序已修（先 BLE release 再分配 PCM），需真机确认进入 AUTH/READY2 与失败回滚 |
+| 待机页 | ✅ 已通过（大时钟完整、60 s、80% 背光、触摸唤醒）；待机阈值/亮度参数仍按远端 60 s/80% |
+| 插件烧录 / 时区设置 | 插件侧 esptool-js 烧录与「开发板时间」需真机回归；**插件内置固件镜像 v0.4.0 早于本轮陀螺仪/语音修复**，发布前需 `node plugins/dsh-airremote/scripts/bundle-firmware.mjs` 重打包 |
+| BLE 0x13 重连循环 | 启动日志曾见主机侧每秒断开重连；本轮陀螺仪测试未复现。若再现，先删除 Windows 蓝牙设备重新配对 |

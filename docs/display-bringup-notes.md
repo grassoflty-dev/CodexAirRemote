@@ -146,3 +146,40 @@ The on-screen Voice/Gyro/A/B buttons are unchanged.
   Store access fault around leaving Gyro mode (suspected overflow; needs a repro).
 - **Standby debug hook** (`APP_UI_STANDBY_TEST_HOOK`) is now 0 for release builds;
   `AR1S` / `AR1B` are compiled out.
+
+
+## 10. Gyro verified on hardware and the "stops after a while" bug (2026-11-11)
+
+User acceptance on the real board:
+
+| Gesture | Expected | Result |
+| --- | --- | --- |
+| Press the button/USB side down | cursor moves **down** | PASS (`VERTICAL_SIGN = +1`) |
+| Roll around the button-USB axis | no cursor motion | PASS (roll-invariant `perpendicular(screen_right, gravity)` axis) |
+| Yaw the USB end left/right | cursor moves left/right, correct sign | PASS |
+
+Root cause of "moves for a while, then freezes": the report path sent a HID
+notification every 8 ms (125/s), overran the BLE connection interval, and after
+one `Send Input Indicate Failed: -1` (controller congestion)
+`ble_mouse_report()` treated the failure as "host not subscribed"
+(`reports_ready = false`) and never sent again; `air_mouse` clears `dx/dy` while
+`reports_ready` is false, so the cursor froze until the next reconnect.
+
+Fixes:
+
+- report cadence 8 ms -> **16 ms** (62.5/s); button events still go out at once;
+- a failed notify no longer disables reporting: < 8 consecutive failures keep the
+  path armed and retry on the next tick; from the 8th failure it switches to slow
+  probing and **re-arms esp_hid's CCC copy with a synthetic GATTS write**
+  (`ccc_restore()`), so a desynced attribute recovers without a reconnect;
+- success clears the failure streak; failures log `HID notify failed (N in a row…)`
+  at most once a second.
+
+Verified log (`firmware/build/gyro-fix.log`): `sent` 0 -> 198 -> 1329 (still
+climbing when the user stopped), `rdy=1` once connected, `drop=0`,
+`HID notify failed=0`, `Indicate Not Enabled=0`, no disconnect, no
+`loop stalled`, `cal=1 / failed=0 / errs=0`.
+
+Field diagnostics (200 ms `diag …` snapshot + `loop stalled` warning) are now
+compiled out by default: set `AIR_MOUSE_DIAGNOSTICS=1` in `air_mouse.c` when
+chasing a motion/report regression.
