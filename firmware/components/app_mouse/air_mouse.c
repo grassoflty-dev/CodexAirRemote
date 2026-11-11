@@ -22,7 +22,13 @@ static const float START_RATE = 1.5f, STOP_RATE = 1.0f;
 static const float LINEAR_GAIN = 11.0f, QUADRATIC_GAIN = 0.17f;
 /* screen_normal is +Z into the back of the board, so "up" is -Z and the
  * two signs must stay in sync: flipping only one inverts the cursor. */
-static const float HORIZONTAL_SIGN = -1.0f, VERTICAL_SIGN = -1.0f;
+static const float HORIZONTAL_SIGN = -1.0f, VERTICAL_SIGN = 1.0f;
+
+/* Field diagnostics: 200 ms state snapshot + loop-stall detection. Off for
+ * release builds; set to 1 when chasing a motion/report regression. */
+#ifndef AIR_MOUSE_DIAGNOSTICS
+#define AIR_MOUSE_DIAGNOSTICS 0
+#endif
 
 typedef struct { float x, y, z; } vec;
 static const vec screen_right = {1, 0, 0};
@@ -80,6 +86,12 @@ static void mouse_task(void *unused)
     unsigned known_connection = 0, known_mode = 0;
     int collected = 0, read_errors = 0;
     unsigned report_tick = 0;
+#if AIR_MOUSE_DIAGNOSTICS
+    /* A 200 ms snapshot tells apart "host stopped taking reports" from "the
+     * pose/calibration pipeline stopped producing motion". */
+    unsigned loop_count = 0, sent_reports = 0, failed_reports = 0;
+    int64_t last_diag = 0, last_loop = 0;
+#endif
     vec gravity = {0}, bias = {0}, sum_accel = {0}, sum_gyro = {0}, axis = {0};
     float filtered_x = 0, filtered_y = 0, dx = 0, dy = 0;
     int64_t sample_time = esp_timer_get_time(), calibration_started = sample_time;
@@ -88,6 +100,22 @@ static void mouse_task(void *unused)
     for (;;) {
         vTaskDelayUntil(&wake, pdMS_TO_TICKS(SAMPLE_MS));
         int64_t now = esp_timer_get_time();
+#if AIR_MOUSE_DIAGNOSTICS
+        loop_count++;
+        if (last_loop != 0 && now - last_loop > 500000) {
+            ESP_LOGW(TAG, "loop stalled %lld ms (loops=%u)", (long long)((now - last_loop) / 1000), loop_count);
+        }
+        if (last_diag == 0 || now - last_diag >= 200000) {
+            last_diag = now;
+            ESP_LOGI(TAG, "diag loops=%u run=%d cal=%d failed=%d conn=%d rdy=%d gen=%u "
+                     "dx=%.1f dy=%.1f fx=%.2f fy=%.2f errs=%d col=%d btn=%02x sent=%u drop=%u",
+                     loop_count, running, atomic_load(&calibrated), atomic_load(&failed),
+                     ble_mouse_connected(), ble_mouse_reports_ready(), ble_mouse_generation(),
+                     dx, dy, filtered_x, filtered_y, read_errors, collected, sent_buttons,
+                     sent_reports, failed_reports);
+        }
+        last_loop = now;
+#endif
         bool connected = ble_mouse_connected();
         unsigned connection = ble_mouse_generation();
         if (!connected || known_connection != connection) {
@@ -116,6 +144,7 @@ static void mouse_task(void *unused)
             known_mode = mode;
             running = wanted;
             if (qmi8658_enable_sensors(&imu, running ? QMI8658_ENABLE_ACCEL | QMI8658_ENABLE_GYRO : 0) != ESP_OK) {
+                ESP_LOGE(TAG, "enable_sensors(%d) failed", running);
                 atomic_store(&failed, true);
                 atomic_store(&requested, false);
             }
@@ -138,6 +167,7 @@ static void mouse_task(void *unused)
         if (result == ESP_OK && ready) result = qmi8658_read_sensor_data(&imu, &sample);
         if (result != ESP_OK) {
             if (++read_errors >= 10) {
+                ESP_LOGE(TAG, "IMU read failed 10x in a row");
                 atomic_store(&failed, true);
                 atomic_store(&requested, false);
             }
@@ -145,7 +175,7 @@ static void mouse_task(void *unused)
         }
         read_errors = 0;
         if (!atomic_load(&calibrated) && now - calibration_started > 30000000) {
-            ESP_LOGW(TAG, "IMU calibration timeout: keep the board still after tapping Gyro");
+            ESP_LOGW(TAG, "IMU calibration timeout after %d samples: keep the board still after tapping Gyro", collected);
             atomic_store(&failed, true);
             atomic_store(&requested, false);
             continue;
@@ -214,13 +244,24 @@ static void mouse_task(void *unused)
             buttons = requested_state;
             button_event = true;
         }
-        if ((++report_tick % 2) == 0 || button_event) {
+        /* 16 ms cadence: 125 reports/s overran the BLE connection interval and
+         * filled the controller queue, which surfaced as send failures. */
+        if ((++report_tick % 4) == 0 || button_event) {
             int8_t x = report_delta(dx), y = report_delta(dy);
-            if ((x || y || button_event) && atomic_load(&requested) && ble_mouse_report(buttons, x, y)) {
-                dx -= x;
-                dy -= y;
-                sent_buttons = buttons;
-                if (queued) xQueueReceive(button_events, &buttons, 0);
+            if (x || y || button_event) {
+                if (atomic_load(&requested) && ble_mouse_report(buttons, x, y)) {
+#if AIR_MOUSE_DIAGNOSTICS
+                    sent_reports++;
+#endif
+                    dx -= x;
+                    dy -= y;
+                    sent_buttons = buttons;
+                    if (queued) xQueueReceive(button_events, &buttons, 0);
+                } else {
+#if AIR_MOUSE_DIAGNOSTICS
+                    failed_reports++;
+#endif
+                }
             }
         }
     }

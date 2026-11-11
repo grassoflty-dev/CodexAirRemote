@@ -1,4 +1,4 @@
-#include "ble_mouse.h"
+﻿#include "ble_mouse.h"
 
 #include <stdatomic.h>
 #include "esp_bt.h"
@@ -23,7 +23,7 @@ static atomic_uint generation;
 static const uint8_t report_map[] = {
     0x05, 0x01, 0x09, 0x02, 0xa1, 0x01, // Generic Desktop / Mouse
     0x09, 0x01, 0xa1, 0x00,             // Pointer
-    0x05, 0x09, 0x19, 0x01, 0x29, 0x03, // Buttons 1–3
+    0x05, 0x09, 0x19, 0x01, 0x29, 0x03, // Buttons 1鈥?
     0x15, 0x00, 0x25, 0x01, 0x95, 0x03, 0x75, 0x01, 0x81, 0x02,
     0x95, 0x01, 0x75, 0x05, 0x81, 0x03, // Padding
     0x05, 0x01, 0x09, 0x30, 0x09, 0x31, 0x09, 0x38, // X/Y and zero wheel
@@ -113,6 +113,7 @@ static int64_t probe_at_us;      /* report_lock */
 static int64_t warn_at_us;       /* report_lock */
 static unsigned dropped_reports; /* report_lock */
 static atomic_uint advertising_data_ready;
+static esp_gatt_if_t s_gatts_if; /* captured on connect for synthetic events */
 static esp_timer_handle_t advertise_fallback;
 static bool controller_inited, controller_enabled, host_inited, host_enabled;
 /* Serializes HID reports against Bluedroid teardown: esp_ble_hidd_dev_input_set()
@@ -134,6 +135,7 @@ static void gatts_event_probe(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if
 {
     switch (event) {
     case ESP_GATTS_CONNECT_EVT:
+        s_gatts_if = gatts_if;
         ESP_LOGI(TAG, "GATTS connected conn_id=%u", param->connect.conn_id);
         break;
     case ESP_GATTS_DISCONNECT_EVT:
@@ -195,7 +197,18 @@ static void ccc_restore(void)
     for (uint8_t i = 0; i < ccc_handle_count; i++) {
         esp_err_t err = esp_ble_gatts_set_attr_value(ccc_handles[i], 2, on);
         ESP_LOGI(TAG, "restore CCCD handle=%u -> %s", ccc_handles[i], esp_err_to_name(err));
-        if (err == ESP_OK) atomic_store(&reports_ready, true);
+        if (err != ESP_OK) continue;
+        /* esp_hid validates notifications against its own copy of the CCC value,
+         * which only a GATTS write event updates. Replay one so the restored
+         * attribute is visible to esp_hid as well. */
+        esp_ble_gatts_cb_param_t synthetic = {0};
+        synthetic.write.handle = ccc_handles[i];
+        synthetic.write.len = 2;
+        synthetic.write.value = (uint8_t *)on;
+        synthetic.write.is_prep = false;
+        synthetic.write.need_rsp = false;
+        esp_hidd_gatts_event_handler(ESP_GATTS_WRITE_EVT, s_gatts_if, &synthetic);
+        atomic_store(&reports_ready, true);
     }
 }
 
@@ -509,6 +522,7 @@ bool ble_mouse_report(uint8_t buttons, int8_t x, int8_t y)
     if (!report_lock) return false;
     if (xSemaphoreTake(report_lock, pdMS_TO_TICKS(10)) != pdTRUE) return false;
     bool sent = false;
+    static unsigned fail_streak;
     if (device && ble_mouse_connected() && !atomic_load(&releasing)) {
         int64_t now = esp_timer_get_time();
         if (!atomic_load(&reports_ready)) {
@@ -519,6 +533,9 @@ bool ble_mouse_report(uint8_t buttons, int8_t x, int8_t y)
                 return false;
             }
             probe_at_us = now;
+            /* Re-arm esp_hid's internal CCC copy; harmless when it is already
+             * correct and recovers a desynced GATT attribute set. */
+            if (ccc_known) ccc_restore();
         }
         uint8_t report[] = {buttons & 0x07, (uint8_t)x, (uint8_t)y, 0};
         sent = esp_hidd_dev_input_set(device, 0, 0, report, sizeof(report)) == ESP_OK;
@@ -529,6 +546,7 @@ bool ble_mouse_report(uint8_t buttons, int8_t x, int8_t y)
                      buttons, sent ? "ok" : "fail");
         }
         if (sent) {
+            fail_streak = 0;
             dropped_reports = 0;
             if (!atomic_exchange(&reports_ready, true)) {
                 ESP_LOGI(TAG, "HID reports enabled by host");
@@ -538,17 +556,36 @@ bool ble_mouse_report(uint8_t buttons, int8_t x, int8_t y)
                 hid_logs_muted = false;
             }
         } else {
-            atomic_store(&reports_ready, false);
             dropped_reports++;
-            /* The HID library logs "Indicate Not Enabled" for every attempt we
-             * make; mute that tag while we wait and keep one rate-limited WARN. */
-            if (!hid_logs_muted) {
-                esp_log_level_set("BLE_HIDD", ESP_LOG_NONE);
-                hid_logs_muted = true;
-            }
-            if (now - warn_at_us >= 1000000) {
-                warn_at_us = now;
-                ESP_LOGW(TAG, "HID reports not enabled by host yet (%u dropped)", dropped_reports);
+            fail_streak++;
+            /* A single failed notify is almost always controller congestion
+             * ("Send Input Indicate Failed: -1"), not a lost CCCD. Keep the
+             * report path armed and retry on the next tick; only after a burst
+             * of failures fall back to slow probing and re-arm esp_hid's CCC
+             * cache (a synthetic CCCD write) so a genuine desync recovers. */
+            if (fail_streak < 8) {
+                if (now - warn_at_us >= 1000000) {
+                    warn_at_us = now;
+                    ESP_LOGW(TAG, "HID notify failed (%u in a row, %u dropped)", fail_streak,
+                             dropped_reports);
+                }
+            } else {
+                if (fail_streak == 8) {
+                    ESP_LOGW(TAG, "HID notify keeps failing, re-arming CCC and probing slowly");
+                    atomic_store(&reports_ready, false);
+                    probe_at_us = now;
+                    ccc_restore();
+                }
+                /* The HID library logs "Indicate Not Enabled" for every attempt
+                 * we make; mute that tag while we wait and keep one WARN/s. */
+                if (!hid_logs_muted) {
+                    esp_log_level_set("BLE_HIDD", ESP_LOG_NONE);
+                    hid_logs_muted = true;
+                }
+                if (now - warn_at_us >= 1000000) {
+                    warn_at_us = now;
+                    ESP_LOGW(TAG, "HID reports not enabled by host yet (%u dropped)", dropped_reports);
+                }
             }
         }
     }
