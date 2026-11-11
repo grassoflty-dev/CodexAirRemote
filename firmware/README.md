@@ -136,8 +136,10 @@ windows\Flash.cmd
 | `AR1?` | `AR1 READY <flags> <12 位 hex MAC>` | 查询就绪状态与蓝牙 MAC；板级初始化完成后才响应 |
 | `AR1W <ssid hex> <password hex>` | `AR1 WIFI OK` / `AR1 WIFI INVALID` / `AR1 WIFI STORE FAILED` | 把 Wi-Fi 配置写入 NVS |
 | `AR1V` | `AR1 VOICE STARTED` / `AR1 VOICE BUSY` | **临时调试入口**：经 USB 启动一次语音会话（无头实测用，见 `docs/pending-hardware-validation.md`）；最终交付前再决定是否移除 |
+| `AR1T <unix 秒>` | `AR1T OK <unix>` / `AR1T ERR` | 设置板端时间：写入 PCF85063A（掉电保持）并同步系统时钟；左上角时钟立即刷新 |
 
 - `<flags>` 是位掩码：bit0 = IMU 就绪，bit1 = BLE 就绪，bit2 = 语音就绪；`7` 表示全部就绪，`0` 表示板级初始化失败。
+- `AR1T` 的参数是 **UTC unix 秒**（无符号十进制，2024–2099 之外视为非法）。板端 RTC 只存本地墙上时间，默认按 **UTC+8** 换算（`components/rtc_board/rtc_board.c` 顶部 `RTC_TZ_OFFSET_SEC` 是唯一定义处）；系统时钟 `time()` 保持 UTC。
 - SSID 和密码都用十六进制表示，按字节编码；SSID 1–32 字节，密码 8–63 字节。密码可传 `-` 表示空（开放网络）。
 - 命令以 `\n` 结尾，`\r` 会被忽略；单行上限 219 字节。
 - 配置保存在 NVS namespace `airremote`、key `wifi`，内容为 `wifi_sta_config_t`；重新配网会覆盖。
@@ -153,17 +155,18 @@ windows\Flash.cmd
 2. `nvs_flash_init`，随后启动 USB 配网任务。
 3. `voice_init`：在堆还完整时分配 16 KB 语音 PCM 环形缓冲。
 4. `board_bus_init`：I2C → AXP2101（面板 ALDO3 供电）。
-5. `mouse_init`：QMI8658（IMU）。
-6. `board_audio_init`：ES8311/ES7210 与 I2S DMA。
-7. `board_display_start`：SH8601 AMOLED + CST9217 触摸 + LVGL 适配器（绘制缓冲与 LVGL 堆在此占用内部 RAM）。
-8. `ble_mouse_init`：Bluedroid + HID，最后才构建 UI，并通过 `provision_report_board` 上报就绪位。
+5. `rtc_board_init`：PCF85063A 实时时钟（同一 I2C0 总线，0x51），起振并把 RTC 时间读出来给左上角时钟。
+6. `mouse_init`：QMI8658（IMU）。
+7. `board_audio_init`：ES8311/ES7210 与 I2S DMA。
+8. `board_display_start`：SH8601 AMOLED + CST9217 触摸 + LVGL 适配器（绘制缓冲与 LVGL 堆在此占用内部 RAM）。
+9. `ble_mouse_init`：Bluedroid + HID，最后才构建 UI，并通过 `provision_report_board` 上报就绪位。
    语音会话开始时释放 BLE 换 Wi-Fi/TLS 内存，结束后恢复。
 
 界面布局（480×480）：
 
 | 元素 | 位置/尺寸 |
 | --- | --- |
-| 标题 `Codex Air Remote` | 左上 `(24, 27)` |
+| 时钟 `HH:MM`（原标题位） | 左上 `(24, 27)`，Montserrat 28 |
 | BLE 状态 | 左上 `(25, 69)` |
 | 电量 | 右上 `(-25, 69)` |
 | Voice 按钮 | `(42, 112)`，150×112 |
@@ -175,6 +178,7 @@ windows\Flash.cmd
 - 两个模式互斥，模式按钮在另一模式进行中禁用。
 - 亮度在活动/录音时为 70，空闲 25 秒后降到 24。
 - 电量每秒通过 AXP2101 刷新；无电池时显示 `--`。
+- 左上角时钟：有系统时间（`AR1T` 之后，UTC+8）就按 `time()` 格式化，否则每约 1 秒读一次 PCF85063A；两者都不可用时显示 `--:--`。`render()` 里 1 秒采样一次，且只在 `HH:MM` 真正变化时才 `lv_label_set_text`。
 - UI 刷新定时器 125 ms，渲染时同步 A/B 按钮的可用状态和提示文字。
 
 ## 蓝牙 HID 鼠标
@@ -277,6 +281,7 @@ firmware/
    ├─ app_mouse/         # QMI8658 陀螺仪 + BLE HID 鼠标
    ├─ app_voice/         # TLS/WSS 语音链路、单播发现、录音/推流
    ├─ app_provision/     # USB Serial/JTAG 配网与串口命令
+   ├─ rtc_board/         # PCF85063A 实时时钟（I2C 0x51）与本地时间格式化
    └─ codec_board/       # 编解码板级配置（board_cfg.txt）
 env/                     # 环境配置（gitignore）：ESP-IDF 5.5.5 + 工具链，见 env/README.md
 ```
@@ -289,9 +294,10 @@ env/                     # 环境配置（gitignore）：ESP-IDF 5.5.5 + 工具�
 | 触摸（CST9217 I2C + INT/RST） | `bsp_board` | `display_bsp.cpp` |
 | PMU/电池（AXP2101） | `bsp_board` | `power_bsp.cpp`（只动 ALDO3 面板复位轨） |
 | IMU（QMI8658） | `bsp_board`/`app_mouse` | `board.cpp`（总线）、`app_mouse/air_mouse.c` |
+| 实时时钟（PCF85063A、掉电保持、`HH:MM`） | `rtc_board` | `components/rtc_board/rtc_board.c`、`include/rtc_board.h` |
 | 陀螺仪空中鼠标 / A-B 按键 | `app_mouse` | `air_mouse.c`、`air_mouse.h` |
 | BLE HID（GATTS 回调、CCC 就绪、按键对账、release/resume） | `app_mouse` | `ble_mouse.c`、`ble_mouse.h` |
-| LVGL UI（状态/Gyro/Voice/A/B、亮度息屏） | `main`（待迁 `app_ui`） | `main/app_main.c` |
+| LVGL UI（状态/Gyro/Voice/A/B、亮度息屏、左上角时钟） | `app_ui` | `components/app_ui/app_ui.c` |
 | 语音链路（TLS1.2/WSS、单播发现、WIFI_PS_NONE、PCM 帧） | `app_voice` | `voice.c`、`voice.h` |
 | 配网 / 串口命令（含 AR1V 语音触发） | `app_provision` | `provision.c`、`provision.h` |
 | 音频编解码（ES8311/ES7210、I2S TDM） | `bsp_board`/`codec_board` | `codec_bsp.cpp`、`codec_board/` |

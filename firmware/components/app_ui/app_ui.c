@@ -9,14 +9,18 @@
 #include "ble_mouse.h"
 #include "board.h"
 #include "esp_log.h"
+#include "rtc_board.h"
 #include "voice.h"
 
 static const char *TAG = "air_remote";
-static lv_obj_t *ble_label, *battery_label, *status_label, *gyro_button, *voice_button;
+static lv_obj_t *clock_label, *ble_label, *battery_label, *status_label, *gyro_button, *voice_button;
 static lv_obj_t *a_button, *b_button, *a_hint, *b_hint;
 static bool mouse_active, mouse_ready, voice_ready, ble_ready;
 static const char *mouse_message = "Tap a mode to begin";
-static uint32_t last_interaction, last_battery_update;
+static uint32_t last_interaction, last_battery_update, last_clock_update;
+/* Set by app_ui_refresh_clock() after the host changes the time, so the next
+ * render tick (<= 125 ms) repaints instead of waiting for the 1 s cadence. */
+static volatile bool clock_dirty = true;
 static int brightness = -1;
 
 static bool voice_busy(voice_state_t s)
@@ -104,6 +108,17 @@ static void render(lv_timer_t *timer)
     voice_state_t voice = voice_state();
     bool recording_mode = voice_busy(voice);
     bool linked = ble_mouse_connected();
+
+    /* Wall clock in the old title slot. Sampling once per second keeps the I2C
+     * reads out of the 125 ms path, and update_label() only calls
+     * lv_label_set_text() when the text really changed. */
+    if (clock_dirty || lv_tick_elaps(last_clock_update) >= 1000) {
+        clock_dirty = false;
+        last_clock_update = lv_tick_get();
+        char text[8];
+        rtc_board_time_text(text, sizeof(text));
+        update_label(clock_label, text);
+    }
 
     update_label(ble_label, linked ? "BLE connected" : "BLE ready to pair");
     if (!ble_ready) update_label(ble_label, "BLE unavailable");
@@ -251,17 +266,24 @@ void app_ui_set_capabilities(bool mouse, bool ble, bool voice)
     voice_ready = voice;
 }
 
+void app_ui_refresh_clock(void)
+{
+    clock_dirty = true;
+}
+
 bool app_ui_init(lv_display_t *display)
 {
     if (!board_lock(1000)) return false;
     lv_obj_t *screen = lv_display_get_screen_active(display);
     lv_obj_set_style_bg_color(screen, lv_color_hex(0x0b121d), 0);
     lv_obj_set_style_text_color(screen, lv_color_hex(0xc2cedb), 0);
-    lv_obj_t *title = lv_label_create(screen);
-    lv_label_set_text(title, "Codex Air Remote");
-    lv_obj_set_style_text_font(title, &lv_font_montserrat_28, 0);
-    lv_obj_set_style_text_color(title, lv_color_white(), 0);
-    lv_obj_align(title, LV_ALIGN_TOP_LEFT, 24, 27);
+    /* Top-left slot: wall clock instead of the old "Codex Air Remote" title.
+     * Same font, colour and position; the text is refreshed in render(). */
+    clock_label = lv_label_create(screen);
+    lv_label_set_text(clock_label, "--:--");
+    lv_obj_set_style_text_font(clock_label, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_color(clock_label, lv_color_white(), 0);
+    lv_obj_align(clock_label, LV_ALIGN_TOP_LEFT, 24, 27);
     ble_label = lv_label_create(screen);
     lv_obj_align(ble_label, LV_ALIGN_TOP_LEFT, 25, 69);
     battery_label = lv_label_create(screen);

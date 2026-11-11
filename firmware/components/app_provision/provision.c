@@ -1,9 +1,11 @@
 ﻿#include "provision.h"
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
+#include "app_ui.h"
 #include "driver/usb_serial_jtag.h"
 #include "driver/usb_serial_jtag_vfs.h"
 #include "esp_check.h"
@@ -11,6 +13,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "nvs.h"
+#include "rtc_board.h"
 /* Serial voice trigger; declared locally to keep app_voice independent. */
 esp_err_t voice_start(void);
 
@@ -77,6 +80,30 @@ static void set_wifi(char *command)
     puts(err == ESP_OK ? "AR1 WIFI OK" : "AR1 WIFI STORE FAILED");
 }
 
+static void set_time(const char *text)
+{
+    /* Strict decimal parse: no sign, no trailing garbage, no overflow. */
+    if (!text[0] || text[0] == '-' || text[0] == '+') {
+        puts("AR1T ERR");
+        return;
+    }
+    char *end = NULL;
+    errno = 0;
+    long long value = strtoll(text, &end, 10);
+    if (errno != 0 || end == text || *end != 0) {
+        puts("AR1T ERR");
+        return;
+    }
+    /* Writes the system clock and the battery-backed RTC; the UI repaints on
+     * its next 125 ms tick so the screen shows the new time at once. */
+    if (rtc_board_set_unix((int64_t)value) != ESP_OK) {
+        puts("AR1T ERR");
+        return;
+    }
+    app_ui_refresh_clock();
+    printf("AR1T OK %lld\n", value);
+}
+
 static void serial_task(void *unused)
 {
     char line[220];
@@ -97,6 +124,7 @@ static void serial_task(void *unused)
                            mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
                 }
                 if (!overflow && strncmp(line, "AR1W ", 5) == 0) set_wifi(line + 5);
+                if (!overflow && strncmp(line, "AR1T ", 5) == 0) set_time(line + 5);
                 /* TEMP: start a voice session over USB for memory/protocol
                  * testing while the touch panel is not being operated. */
                 if (!overflow && strcmp(line, "AR1V") == 0) {

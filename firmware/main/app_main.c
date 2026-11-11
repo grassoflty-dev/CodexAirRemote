@@ -11,6 +11,7 @@
 #include "freertos/task.h"
 #include "nvs_flash.h"
 #include "provision.h"
+#include "rtc_board.h"
 #include "voice.h"
 
 static const char *TAG = "air_remote";
@@ -60,6 +61,13 @@ void app_main(void)
     esp_err_t bus_status = board_bus_init();
     if (bus_status != ESP_OK) ESP_LOGE(TAG, "I2C/PMU init failed: %s", esp_err_to_name(bus_status));
     log_heap("i2c+pmu");
+
+    /* Start the PCF85063A before the UI exists, so the first frame already
+     * shows the time kept by the battery-backed clock instead of "--:--". */
+    if (bus_status == ESP_OK && rtc_board_init() != ESP_OK) {
+        ESP_LOGW(TAG, "RTC unavailable, time will be RAM-only");
+    }
+    log_heap("rtc");
 
     mouse_ready = bus_status == ESP_OK && mouse_init() == ESP_OK;
     log_heap("imu");
