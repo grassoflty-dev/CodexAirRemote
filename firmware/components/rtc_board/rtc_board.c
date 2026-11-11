@@ -6,8 +6,8 @@
  * running while the board is powered off.
  *
  * This file is the single place that knows both the register layout and the
- * time zone: the RTC stores local time (UTC+8) while the system clock (time())
- * stays UTC, and the two are converted here only.
+ * time zone: the RTC stores local time (UTC+9, Asia/Tokyo) while the system
+ * clock (time()) stays UTC, and the two are converted here only.
  */
 #include "rtc_board.h"
 
@@ -48,8 +48,11 @@ static const char *TAG = "rtc";
 
 /* ESP-IDF's newlib has no time zone configured (TZ is unset and nothing calls
  * tzset()), so localtime_r() would return UTC. Converting with gmtime_r() on a
- * shifted epoch keeps the offset in one place instead of relying on env vars. */
-#define RTC_TZ_OFFSET_SEC (8 * 3600) /* UTC+8 */
+ * shifted epoch keeps the offset in one place instead of relying on env vars.
+ *
+ * The offset matches where the board lives: Asia/Tokyo (UTC+9, no DST). If the
+ * board moves time zones this single constant is the only place to change. */
+#define RTC_TZ_OFFSET_SEC (9 * 3600) /* UTC+9, Asia/Tokyo */
 
 static i2c_master_dev_handle_t s_rtc;
 static bool s_present;
@@ -156,9 +159,9 @@ esp_err_t rtc_board_init(void)
 
     struct tm now;
     if (read_fields(&now) == ESP_OK && fields_valid(&now)) {
-        ESP_LOGI(TAG, "PCF85063A ready, RTC holds %04d-%02d-%02d %02d:%02d:%02d (UTC+8, control 0x%02x)",
+        ESP_LOGI(TAG, "PCF85063A ready, RTC holds %04d-%02d-%02d %02d:%02d:%02d (UTC%+d, control 0x%02x)",
                  now.tm_year + 1900, now.tm_mon + 1, now.tm_mday, now.tm_hour, now.tm_min,
-                 now.tm_sec, control);
+                 now.tm_sec, RTC_TZ_OFFSET_SEC / 3600, control);
     } else {
         ESP_LOGW(TAG, "PCF85063A ready but its time is unset; send AR1T <unix> to set it");
     }

@@ -139,7 +139,7 @@ windows\Flash.cmd
 | `AR1T <unix 秒>` | `AR1T OK <unix>` / `AR1T ERR` | 设置板端时间：写入 PCF85063A（掉电保持）并同步系统时钟；左上角时钟立即刷新 |
 
 - `<flags>` 是位掩码：bit0 = IMU 就绪，bit1 = BLE 就绪，bit2 = 语音就绪；`7` 表示全部就绪，`0` 表示板级初始化失败。
-- `AR1T` 的参数是 **UTC unix 秒**（无符号十进制，2024–2099 之外视为非法）。板端 RTC 只存本地墙上时间，默认按 **UTC+8** 换算（`components/rtc_board/rtc_board.c` 顶部 `RTC_TZ_OFFSET_SEC` 是唯一定义处）；系统时钟 `time()` 保持 UTC。
+- `AR1T` 的参数是 **UTC unix 秒**（无符号十进制，2024–2099 之外视为非法）。板端 RTC 只存本地墙上时间，默认按 **UTC+9（Asia/Tokyo）** 换算（`components/rtc_board/rtc_board.c` 顶部 `RTC_TZ_OFFSET_SEC` 是唯一定义处，换时区只改这一处）；系统时钟 `time()` 保持 UTC。
 - SSID 和密码都用十六进制表示，按字节编码；SSID 1–32 字节，密码 8–63 字节。密码可传 `-` 表示空（开放网络）。
 - 命令以 `\n` 结尾，`\r` 会被忽略；单行上限 219 字节。
 - 配置保存在 NVS namespace `airremote`、key `wifi`，内容为 `wifi_sta_config_t`；重新配网会覆盖。
@@ -178,7 +178,7 @@ windows\Flash.cmd
 - 两个模式互斥，模式按钮在另一模式进行中禁用。
 - 亮度在活动/录音时为 70，空闲 25 秒后降到 24。
 - 电量每秒通过 AXP2101 刷新；无电池时显示 `--`。
-- 左上角时钟：有系统时间（`AR1T` 之后，UTC+8）就按 `time()` 格式化，否则每约 1 秒读一次 PCF85063A；两者都不可用时显示 `--:--`。`render()` 里 1 秒采样一次，且只在 `HH:MM` 真正变化时才 `lv_label_set_text`。
+- 左上角时钟：有系统时间（`AR1T` 之后，UTC+9）就按 `time()` 格式化，否则每约 1 秒读一次 PCF85063A；两者都不可用时显示 `--:--`。`render()` 里 1 秒采样一次，且只在 `HH:MM` 真正变化时才 `lv_label_set_text`。
 - UI 刷新定时器 125 ms，渲染时同步 A/B 按钮的可用状态和提示文字。
 
 ## 蓝牙 HID 鼠标
