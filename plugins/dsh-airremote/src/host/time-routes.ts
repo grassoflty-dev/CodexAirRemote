@@ -11,6 +11,7 @@
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { BoardSyncError, findBoardPort, syncBoardTime, type BoardSyncErrorCode } from './serial-port.js'
+import type { SerialHolder } from './serial-holder.js'
 import { isTimezoneId, readTimePreference, writeTimePreference } from './time-settings.js'
 
 /** 请求体上限；两个 POST 的载荷都是几十字节，4 KB 足够并挡住放大攻击。 */
@@ -25,6 +26,8 @@ export interface TimeRouteOptions {
   dataDir: string
   /** 配置里显式指定的串口；空串表示自动发现。 */
   serialPort: string
+  /** 串口锁：浏览器烧录时占着 `flash`，这里同步前必须抢到 `sync`。 */
+  serialHolder?: SerialHolder
   /** 正常事件（如一次成功的同步）。 */
   log?: (message: string) => void
   /** 异常事件；不抛错，只记录。 */
@@ -157,6 +160,18 @@ export class TimeRoutes {
       this.sendJson(res, 200, { ok: false, error: 'internal', message: '插件正在卸载，请稍后重试', port: null, lines: [] })
       return
     }
+    /** 串口互斥：浏览器正在烧录时不能抢口（烧录由前端 Web Serial 持有）。 */
+    const holder = this.options.serialHolder
+    if (holder !== undefined && holder.state().holder === 'flash') {
+      this.sendJson(res, 200, {
+        ok: false,
+        error: 'busy',
+        port: null,
+        lines: [],
+        message: '串口正被烧录占用'
+      })
+      return
+    }
     if (this.syncing) {
       this.sendJson(res, 200, {
         ok: false,
@@ -167,6 +182,17 @@ export class TimeRoutes {
       })
       return
     }
+    if (holder !== undefined && !holder.acquire('sync')) {
+      this.sendJson(res, 200, {
+        ok: false,
+        error: 'busy',
+        port: null,
+        lines: [],
+        message: '串口正被其它操作占用，请稍后再试'
+      })
+      return
+    }
+    const lockHeld = holder !== undefined
 
     this.syncing = true
     /** host 的时钟，不用浏览器时间。 */
@@ -194,6 +220,7 @@ export class TimeRoutes {
       this.sendJson(res, 200, { ok: false, error: code, port, lines, message: describe(error) })
     } finally {
       this.syncing = false
+      if (lockHeld) holder?.release('sync')
     }
   }
 

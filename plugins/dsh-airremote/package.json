@@ -24,7 +24,9 @@
     "lib",
     "cordis.patch.yml",
     "README.md",
-    "assets"
+    "assets",
+    "firmware",
+    "scripts/bundle-firmware.mjs"
   ],
   "dsh": {
     "bundle": {
