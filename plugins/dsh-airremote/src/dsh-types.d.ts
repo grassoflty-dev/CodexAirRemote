@@ -5,7 +5,7 @@
  * installation; only the members used here are declared.
  */
 
-import type { IncomingMessage } from 'node:http'
+import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Duplex } from 'node:stream'
 
 declare module '@deepseek-ai/cordis' {
@@ -14,6 +14,16 @@ declare module '@deepseek-ai/cordis' {
     webServer: {
       getOrigin(): string
       tapIndex(transform: (html: string) => string): () => void
+      /**
+       * 普通 HTTP 路由。`exact` 精确匹配路径、`prefix` 最长前缀优先；
+       * 匹配只按路径、不看方法，所以同一路径的多个方法要在一个 handler 里分发。
+       * 重复注册同一个 (kind, path) 会抛错。
+       */
+      register(route: {
+        kind: 'exact' | 'prefix'
+        path: string
+        handler(req: IncomingMessage, res: ServerResponse): void | Promise<void>
+      }): () => void
       registerUpgrade(route: {
         path: string
         handler(req: IncomingMessage, socket: Duplex, head: Buffer): void | Promise<void>

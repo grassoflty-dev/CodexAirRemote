@@ -7,6 +7,7 @@
  *   ~/.dsh/airremote/pairing.txt  - the 64-character token embedded in the firmware
  *   ~/.dsh/airremote/server.crt   - the board's self-signed certificate (optional pin)
  *   ~/.dsh/airremote/sim.wav      - speech used by the simulated board
+ *   ~/.dsh/airremote/time.json    - 设置页选的时区（`auto` 表示跟随系统）
  *
  * The pairing token is a secret: it is read from disk or the environment, never
  * from the committed profile patch.
@@ -37,6 +38,8 @@ export interface AirRemoteHostConfig {
   simWav: string
   /** Local port for the simulated board's plain-WebSocket server. */
   simPort: number
+  /** 写时间用的串口（如 `COM7`）；空串表示按 USB VID 303A 自动发现。 */
+  serialPort: string
 }
 
 export interface AirRemoteHostConfigOverrides {
@@ -51,6 +54,7 @@ export interface AirRemoteHostConfigOverrides {
   simulate?: boolean
   simWav?: string
   simPort?: number
+  serialPort?: string
 }
 
 function env(name: string): string | undefined {
@@ -84,7 +88,8 @@ export function resolveHostConfig(overrides: AirRemoteHostConfigOverrides = {}):
     discoveryTimeoutMs: overrides.discoveryTimeoutMs ?? Number(env('AIRREMOTE_DISCOVERY_TIMEOUT_MS') ?? '30000'),
     simulate,
     simWav: overrides.simWav ?? env('AIRREMOTE_SIM_WAV') ?? join(dataDir, 'sim.wav'),
-    simPort: overrides.simPort ?? Number(env('AIRREMOTE_SIM_PORT') ?? '47684')
+    simPort: overrides.simPort ?? Number(env('AIRREMOTE_SIM_PORT') ?? '47684'),
+    serialPort: overrides.serialPort ?? env('AIRREMOTE_SERIAL_PORT') ?? ''
   }
 }
 
