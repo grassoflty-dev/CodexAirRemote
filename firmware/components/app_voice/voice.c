@@ -47,8 +47,19 @@ static uint8_t *audio_storage;
 static esp_err_t audio_open(void)
 {
     if (audio) return ESP_OK;
-    audio_storage = heap_caps_malloc(BUFFER_BYTES + 1, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    ESP_RETURN_ON_FALSE(audio_storage, ESP_ERR_NO_MEM, TAG, "PCM buffer");
+    /* Bluedroid's blocks are released asynchronously; the first malloc right
+     * after ble_mouse_release() can fail even though the free counter is
+     * already high. Retry briefly and report the largest block on failure. */
+    for (int attempt = 0; attempt < 4 && audio_storage == NULL; attempt++) {
+        if (attempt > 0) vTaskDelay(pdMS_TO_TICKS(100));
+        audio_storage = heap_caps_malloc(BUFFER_BYTES + 1, MALLOC_CAP_8BIT);
+    }
+    if (audio_storage == NULL) {
+        ESP_LOGE(TAG, "PCM buffer %d B failed, free %u largest %u", BUFFER_BYTES + 1,
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+        return ESP_ERR_NO_MEM;
+    }
     audio = xStreamBufferCreateStatic(BUFFER_BYTES + 1, PCM_BYTES, audio_storage, &stream_storage);
     if (!audio) {
         heap_caps_free(audio_storage);
