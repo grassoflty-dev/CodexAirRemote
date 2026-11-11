@@ -126,3 +126,23 @@ still" so the state is visible.
 | RST | Hardware reset, firmware not involved | — |
 
 The on-screen Voice/Gyro/A/B buttons are unchanged.
+
+
+## 9. Standby clock fonts, voice buffer order and gyro fixes (2026-11-11)
+
+- **Standby digits were blank** because LVGL builds a per-glyph A8 mask from its own
+  20 KiB pool ('0' = 90x128 = 11.5 KiB > the ~3 KiB left). `app_ui.c` now routes
+  `LV_GLOBAL_DEFAULT()->font_draw_buf_handlers` to `heap_caps_malloc/free`, so masks
+  come from the system heap only while a big label draws; `CONFIG_LV_MEM_SIZE` is
+  unchanged. Fallback if the system heap is too tight: 48-64 px standby font.
+- **Voice session could not start**: `voice.c` asked for the 16 KiB PCM ring while
+  Bluedroid still owned the large contiguous blocks. The task now calls
+  `ble_mouse_release()` first and `audio_open()` second; every failure path resumes
+  BLE before releasing the busy hold.
+- **Gyro**: pitch axis uses the roll-invariant `perpendicular(screen_right, gravity)`
+  (the old `cross(gravity, screen_normal)` leaked roll into dy); `screen_normal` and
+  `VERTICAL_SIGN` are both flipped for board +Z/back semantics; calibration tolerance
+  is `0.15 * g` (sensor reads ~6.8 % high); mouse task stack raised to 6 KiB after a
+  Store access fault around leaving Gyro mode (suspected overflow; needs a repro).
+- **Standby debug hook** (`APP_UI_STANDBY_TEST_HOOK`) is now 0 for release builds;
+  `AR1S` / `AR1B` are compiled out.

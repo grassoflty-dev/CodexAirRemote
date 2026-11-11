@@ -218,3 +218,16 @@ I (xxx) ble_mouse: BLE advertising started
 | 无临时探针 | ✅ | panel_probe/AR1D-AR1X/board diag 已删除；仅保留 AR1V 串口语音触发 |
 | 与参考实现 diff 附录 | ✅ | `docs/firmware-audit.md` 附录 A/B |
 | UI 已组件化 | ✅ | `components/app_ui`（`app_ui_init()` / `app_ui_set_capabilities()`，LVGL 自刷新 timer 与交互在组件内） |
+
+
+## 11. 待机页 / 语音 / 陀螺仪（2026-11-11 修复后）
+
+| 顺序 | 项目 | 怎么测 | 期望 |
+| --- | --- | --- | --- |
+| 1 | 待机页数字 | 静置 60 s（不触摸、不运行 Voice/Gyro） | 黑底出现完整 HH:MM（不再只有冒号），每秒走字，80% 背光；触摸唤醒不误触按钮 |
+| 2 | 语音会话启动 | 点 Voice 或发 AR1V | 不再出现 PCM buffer allocation failed；进入 AUTH/READY2；日志可见 `BT released` 之后 `Wi-Fi ready` |
+| 3 | 语音失败回滚 | 断网时点 Voice | 会话失败后 BLE 鼠标能恢复（`BT resume`），无 panic |
+| 4 | 陀螺仪滚转 | 空中鼠标模式下只滚转手腕（右侧下压） | 光标不应竖向漂移（旧 bug：dy +1..+7） |
+| 5 | 陀螺仪上下方向 | 前后倾斜 | 上下方向与手势一致（screen_normal/VERTICAL_SIGN 已同时修正） |
+| 6 | 校准容差 | 手抖状态下点 Gyro 并保持大致静止 | 不再频繁重置，6 s 内完成校准 |
+| 7 | 退出 Gyro 稳定性 | 反复进入/退出 Gyro 10 次（BLE 已连接） | 无 Guru/Store access fault；若仍崩溃记录日志与复现步骤（栈已加到 6 KiB，属可疑项） |
