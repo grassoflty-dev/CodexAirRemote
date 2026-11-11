@@ -1,6 +1,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { AirRemoteBar } from './AirRemoteBar.js'
 import { DevBoardTime } from './DevBoardTime.js'
+import { FirmwareFlash } from './FirmwareFlash.js'
 import { createVoiceState } from './voice-state.js'
 import { installVirtualMicrophone } from './virtual-mic.js'
 
@@ -37,6 +38,18 @@ export async function apply(ctx: Context): Promise<void> {
         label: '开发板时间'
       },
       DevBoardTime as never
+    )
+  )
+
+  ctx.slots.inject('settings.section', () =>
+    ctx.slots.register(
+      {
+        name: 'settings.section',
+        id: 'airremote-firmware',
+        order: 41,
+        label: '固件烧录'
+      },
+      FirmwareFlash as never
     )
   )
 }

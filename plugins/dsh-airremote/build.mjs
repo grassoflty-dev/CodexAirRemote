@@ -63,6 +63,7 @@ await build({
     format: 'cjs',
     exports: 'named',
     sourcemap: false,
+    codeSplitting: false,
     banner: clientBanner,
     footer: clientFooter
   }
