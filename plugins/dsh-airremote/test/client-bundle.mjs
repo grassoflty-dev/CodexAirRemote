@@ -2,6 +2,10 @@
  * Load the built DSH client bundle exactly as `dsh-client-modules` does:
  * evaluate the script, take the registered `{id, factory}`, and run the factory
  * with a CJS `require`. Verifies the wrapper, exports and a browserless `apply`.
+ *
+ * The plugin contributes three slots: the status line in the conversation dock
+ * plus two settings sections (board time and firmware flashing). Anything else is
+ * treated as an unexpected contribution and fails the test.
  */
 
 import assert from 'node:assert/strict'
@@ -11,6 +15,17 @@ import vm from 'node:vm'
 
 const require = createRequire(import.meta.url)
 const source = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
+
+/* The bundle must still ship these contracts, not just the slot registrations. */
+for (const needle of [
+  'settings.section',
+  'airremote-time',
+  'airremote-firmware',
+  '/airremote/sync-time',
+  '/airremote/firmware/manifest'
+]) {
+  assert.ok(source.includes(needle), `client bundle mentions ${needle}`)
+}
 
 let registration
 const sandbox = {
@@ -36,8 +51,16 @@ assert.equal(typeof exports.apply, 'function')
 assert.equal(exports.inject.length, 1)
 assert.equal(exports.inject[0], 'slots')
 
+/* Every contribution the plugin is allowed to make: `${slot}:${id}` -> slot. */
+const expectations = new Map([
+  ['conversation.input.dock:dsh-airremote-status', 'conversation.input.dock'],
+  ['settings.section:airremote-time', 'settings.section'],
+  ['settings.section:airremote-firmware', 'settings.section']
+])
+const allowedSlots = new Set(expectations.values())
+const registered = []
+
 let effectRegistered = false
-let dockRegistered = false
 const ctx = {
   effect(body) {
     effectRegistered = true
@@ -47,18 +70,20 @@ const ctx = {
   },
   slots: {
     inject(name, callback) {
-      assert.equal(name, 'conversation.input.dock')
+      assert.ok(allowedSlots.has(name), `unexpected slot injected: ${name}`)
       callback()
     },
     register(options) {
-      assert.equal(options.name, 'conversation.input.dock')
-      assert.equal(options.id, 'dsh-airremote-status')
-      dockRegistered = true
+      const key = `${options.name}:${options.id}`
+      assert.ok(expectations.has(key), `unexpected slot registration: ${key}`)
+      registered.push(key)
       return () => undefined
     }
   }
 }
 await exports.apply(ctx)
 assert.equal(effectRegistered, true)
-assert.equal(dockRegistered, true)
-console.log('ok  built client bundle registers and applies (id=dsh-airremote, dock status)')
+assert.deepEqual(registered.sort(), [...expectations.keys()].sort())
+console.log(
+  'ok  built client bundle registers and applies (id=dsh-airremote, dock status + board time + firmware flash)'
+)
