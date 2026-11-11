@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useId, useState } from 'react'
 
 /**
- * Timezone table shared with the host contract (docs: airremote-contract.md §3).
+ * Timezone table shared with the host routes (see README.md「开发板时间」).
  * `auto` follows the browser clock; every other row pins the offset the board
  * must display. Minutes are east-positive, matching `AR1Z <minutes>`.
  */
