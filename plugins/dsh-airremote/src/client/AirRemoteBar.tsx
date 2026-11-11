@@ -5,9 +5,11 @@ export interface AirRemoteBarProps {
   voiceState?: VoiceState
 }
 
-/** Dock bar under the composer: shows the voice pipeline state and last transcript. */
+/** Dock hint under the composer: explains the Air Remote link while the official mic is active. */
 export function AirRemoteBar({ voiceState }: AirRemoteBarProps) {
-  const [snapshot, setSnapshot] = useState(() => voiceState?.get() ?? { phase: 'idle' as const, detail: '', lastTranscript: '' })
+  const [snapshot, setSnapshot] = useState(() =>
+    voiceState?.get() ?? { phase: 'idle' as const, detail: '', lastTranscript: '' }
+  )
 
   useEffect(() => {
     if (voiceState === undefined) return
@@ -17,6 +19,7 @@ export function AirRemoteBar({ voiceState }: AirRemoteBarProps) {
 
   if (snapshot.phase === 'idle') return null
 
+  const icon = snapshot.phase === 'error' ? '⚠️' : snapshot.phase === 'live' ? '🔴' : '🎙'
   return (
     <div
       role="status"
@@ -30,9 +33,9 @@ export function AirRemoteBar({ voiceState }: AirRemoteBarProps) {
         padding: '2px 4px'
       }}
     >
-      <span aria-hidden="true">{snapshot.phase === 'error' ? '⚠️' : '🎙'}</span>
-      <span>{snapshot.detail === '' ? snapshot.phase : snapshot.detail}</span>
-      {snapshot.lastTranscript === '' ? null : <span style={{ opacity: 0.7 }}>「{snapshot.lastTranscript}」</span>}
+      <span aria-hidden="true">{icon}</span>
+      <span>Air Remote</span>
+      <span style={{ opacity: 0.7 }}>{snapshot.detail === '' ? snapshot.phase : snapshot.detail}</span>
     </div>
   )
 }

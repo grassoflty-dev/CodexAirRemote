@@ -1,40 +1,29 @@
 import type { Context } from '@deepseek-ai/cordis'
-import { AirRemoteButton, type AirRemoteButtonProps } from './AirRemoteButton.js'
 import { AirRemoteBar } from './AirRemoteBar.js'
 import { createVoiceState } from './voice-state.js'
+import { installVirtualMicrophone } from './virtual-mic.js'
 
 /**
- * Client entry: owns the UI contribution lifecycle.
- * `slots` is the only required client service for M1 (fake ASR). Later
- * milestones add `remote` (board link + whisper worker RPC) and `locale`.
+ * Client entry: install the virtual microphone that the official DSH
+ * voice-input plugin consumes. There is deliberately no microphone button here
+ * — the official plugin owns the trigger, recording UI and recognition.
  */
 export const inject = ['slots']
 
 export async function apply(ctx: Context): Promise<void> {
   const voiceState = createVoiceState()
-
-  ctx.slots.inject('conversation.input.right', () =>
-    ctx.slots.register(
-      {
-        name: 'conversation.input.right',
-        id: 'dsh-airremote-voice',
-        order: 31,
-        inject: (sessionId: string) => ({ voiceState, sessionId })
-      },
-      AirRemoteButton as never
-    )
-  )
+  const disposeMicrophone = installVirtualMicrophone({ status: voiceState })
+  ctx.effect(() => disposeMicrophone, 'dsh-airremote virtual microphone')
 
   ctx.slots.inject('conversation.input.dock', () =>
     ctx.slots.register(
       {
         name: 'conversation.input.dock',
-        id: 'dsh-airremote-bar',
-        order: 16
+        id: 'dsh-airremote-status',
+        order: 16,
+        inject: () => ({ voiceState })
       },
       AirRemoteBar as never
     )
   )
-
-  void ({} as AirRemoteButtonProps)
 }

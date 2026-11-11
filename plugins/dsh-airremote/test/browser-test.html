@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Air Remote virtual microphone test</title>
+  </head>
+  <body>
+    <pre id="log">running…</pre>
+    <script src="/virtual-mic.test.js"></script>
+    <script>
+      window.__runTest = async () => {
+        const result = { ok: false }
+        try {
+          const dispose = AirRemoteVirtualMic.installVirtualMicrophone({
+            audioUrl: `ws://${location.host}/airremote/audio`
+          })
+          const devices = await navigator.mediaDevices.enumerateDevices()
+          result.hasDevice = devices.some((device) => device.deviceId === 'airremote' && device.kind === 'audioinput')
+          result.deviceLabel = devices.find((device) => device.deviceId === 'airremote')?.label
+
+          const stream = await navigator.mediaDevices.getUserMedia({
+            audio: { deviceId: { exact: 'airremote' }, echoCancellation: true, noiseSuppression: true },
+            video: false
+          })
+          const track = stream.getAudioTracks()[0]
+          result.trackLabel = track.label
+          result.trackSettings = track.getSettings()
+          result.sessionCount = AirRemoteVirtualMic.virtualMicSessionCount()
+
+          const recorder = new MediaRecorder(stream)
+          const chunks = []
+          recorder.ondataavailable = (event) => {
+            if (event.data.size > 0) chunks.push(event.data)
+          }
+          const stopped = new Promise((resolve) => {
+            recorder.onstop = resolve
+          })
+          recorder.start()
+          await new Promise((resolve) => setTimeout(resolve, 1800))
+          recorder.stop()
+          await stopped
+          stream.getTracks().forEach((item) => item.stop())
+          result.mimeType = recorder.mimeType
+          const blob = new Blob(chunks, { type: recorder.mimeType })
+          result.bytes = blob.size
+
+          const context = new AudioContext()
+          const decoded = await context.decodeAudioData(await blob.arrayBuffer())
+          const data = decoded.getChannelData(0)
+          let sum = 0
+          for (let i = 0; i < data.length; i++) sum += data[i] * data[i]
+          result.rms = Math.sqrt(sum / data.length)
+          result.duration = decoded.duration
+          await context.close()
+          dispose()
+          result.ok = result.hasDevice && result.bytes > 1000 && result.rms > 0.01
+          return result
+        } catch (error) {
+          result.error = String((error && error.stack) || error)
+          return result
+        }
+      }
+      document.getElementById('log').textContent = 'ready'
+    </script>
+  </body>
+</html>
