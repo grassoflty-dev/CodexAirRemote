@@ -51,3 +51,8 @@
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# ---------- DSH 插件构建产物/依赖 ----------
+/plugins/*/node_modules/
+/plugins/*/lib/
+
