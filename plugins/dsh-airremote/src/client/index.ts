@@ -1,5 +1,6 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { AirRemoteBar } from './AirRemoteBar.js'
+import { DevBoardTime } from './DevBoardTime.js'
 import { createVoiceState } from './voice-state.js'
 import { installVirtualMicrophone } from './virtual-mic.js'
 
@@ -24,6 +25,18 @@ export async function apply(ctx: Context): Promise<void> {
         inject: () => ({ voiceState })
       },
       AirRemoteBar as never
+    )
+  )
+
+  ctx.slots.inject('settings.section', () =>
+    ctx.slots.register(
+      {
+        name: 'settings.section',
+        id: 'airremote-time',
+        order: 40,
+        label: '开发板时间'
+      },
+      DevBoardTime as never
     )
   )
 }
