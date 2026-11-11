@@ -7,6 +7,8 @@ import { BoardDiscovery } from './host/discovery.js'
 import { FakeBoard } from './host/fake-board.js'
 import { resolveHostConfig, simulatedToken, type AirRemoteHostConfigOverrides } from './host/config.js'
 import { FirmwareRoutes } from './host/firmware-routes.js'
+import { FlashRoute } from './host/flash-route.js'
+import { findBoardPort } from './host/serial-port.js'
 import { SerialHolder, SerialRoutes } from './host/serial-holder.js'
 import { TimeRoutes } from './host/time-routes.js'
 
@@ -150,6 +152,26 @@ export async function apply(ctx: Context, config: AirRemoteHostConfigOverrides =
     }
   }
 
+  /**
+   * 烧录 upgrade 路由：`/airremote/flash`。
+   * 浏览器点「烧录」→ 这里用 esptool-js + node-serialport 在**宿主进程**里烧内置镜像
+   * （不再用 Web Serial），烧录期间持有 `flash` 串口锁，`/airremote/sync-time` 回 busy。
+   * 注册失败（旧版 webserver 没有 `registerUpgrade`）只告警，不能让插件加载失败。
+   */
+  const flashRoute = new FlashRoute({
+    firmwareDir: FIRMWARE_DIR,
+    holder: serialHolder,
+    resolvePort: () => findBoardPort(resolved.serialPort),
+    logger: (message) => logger.info(message),
+    warn: (message) => logger.warn(message)
+  })
+  let disposeFlashRoute: (() => void) | undefined
+  try {
+    disposeFlashRoute = ctx.webServer.registerUpgrade({ path: '/airremote/flash', handler: flashRoute.handler })
+  } catch (error) {
+    logger.warn(`flash route unavailable: ${error instanceof Error ? error.message : String(error)}`)
+  }
+
   let disposeTap: (() => void) | undefined
   try {
     const origin = ctx.webServer.getOrigin()
@@ -168,6 +190,7 @@ export async function apply(ctx: Context, config: AirRemoteHostConfigOverrides =
   ctx.effect(() => {
     return () => {
       disposeTap?.()
+      disposeFlashRoute?.()
       disposeRoute()
       for (const dispose of disposeTimeRoutes) {
         try {
@@ -185,6 +208,7 @@ export async function apply(ctx: Context, config: AirRemoteHostConfigOverrides =
       }
       timeRoutes.dispose()
       route.dispose()
+      flashRoute.dispose()
       fake?.stop()
       discovery.close()
     }

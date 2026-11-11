@@ -46,7 +46,8 @@ const clientExternals = [
 await build({
   input: 'src/index.ts',
   platform: 'node',
-  external: [/^node:/, '@deepseek-ai/cordis'],
+  // `esptool-js` 保持外部化（约 300 KB，动态 import 时再加载），别打进 bundle。
+  external: [/^node:/, '@deepseek-ai/cordis', 'esptool-js'],
   output: {
     file: 'lib/index.js',
     format: 'esm',
@@ -72,7 +73,7 @@ await build({
 await build({
   input: 'src/host/test-entry.ts',
   platform: 'node',
-  external: [/^node:/],
+  external: [/^node:/, 'esptool-js'],
   output: {
     file: 'test/dist/host-test.js',
     format: 'esm',
