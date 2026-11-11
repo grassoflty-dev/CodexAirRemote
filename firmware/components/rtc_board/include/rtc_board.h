@@ -14,8 +14,9 @@ extern "C" {
  * On-board PCF85063ATL real-time clock (I2C 0x51, on the shared I2C0 bus with
  * the AXP2101 PMU and the CST9217 touch controller).
  *
- * The chip only stores a plain wall clock, so the firmware keeps it in *local*
- * time (UTC+8, see rtc_board.c) while the system clock (time()) stays UTC.
+ * The chip stores UTC; the display time zone is a separate offset in minutes
+ * (default UTC+8) that the host sets with AR1Z and that survives a reboot in
+ * NVS. All time-zone math lives in rtc_board.c.
  */
 
 /* Add the RTC to the shared bus and start its oscillator. Must run after
@@ -35,6 +36,13 @@ void rtc_board_date_text(char *out, size_t size);
 /* Apply a UTC unix timestamp: stores it in the RTC backup domain (so the clock
  * keeps running across power-off) and in the system clock (so time() agrees). */
 esp_err_t rtc_board_set_unix(int64_t unix_seconds);
+
+/* Display offset in minutes east of UTC (480 = UTC+8, range -720..+840).
+ * Persisted in NVS under `airremote_time`/`tz_min`. */
+esp_err_t rtc_board_set_tz_minutes(int minutes);
+
+/* Currently active display offset in minutes. */
+int rtc_board_tz_minutes(void);
 
 #ifdef __cplusplus
 }

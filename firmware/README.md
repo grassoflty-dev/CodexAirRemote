@@ -136,10 +136,13 @@ windows\Flash.cmd
 | `AR1?` | `AR1 READY <flags> <12 位 hex MAC>` | 查询就绪状态与蓝牙 MAC；板级初始化完成后才响应 |
 | `AR1W <ssid hex> <password hex>` | `AR1 WIFI OK` / `AR1 WIFI INVALID` / `AR1 WIFI STORE FAILED` | 把 Wi-Fi 配置写入 NVS |
 | `AR1V` | `AR1 VOICE STARTED` / `AR1 VOICE BUSY` | **临时调试入口**：经 USB 启动一次语音会话（无头实测用，见 `docs/pending-hardware-validation.md`）；最终交付前再决定是否移除 |
-| `AR1T <unix 秒>` | `AR1T OK <unix>` / `AR1T ERR` | 设置板端时间：写入 PCF85063A（掉电保持）并同步系统时钟；左上角时钟立即刷新 |
+| `AR1T <unix 秒>` | `AR1T OK <unix>` / `AR1T ERR` | 设置板端时间：把 **UTC** 写入 PCF85063A（掉电保持）并同步系统时钟；屏幕立即刷新 |
+| `AR1Z <分钟>` | `AR1Z OK <分钟>` / `AR1Z ERR` | 设置**显示时区**（东为正，-720…+840，如 `480`=UTC+8、`540`=UTC+9、`0`=UTC），写入 NVS 持久化 |
 
 - `<flags>` 是位掩码：bit0 = IMU 就绪，bit1 = BLE 就绪，bit2 = 语音就绪；`7` 表示全部就绪，`0` 表示板级初始化失败。
-- `AR1T` 的参数是 **UTC unix 秒**（无符号十进制，2024–2099 之外视为非法）。板端 RTC 只存本地墙上时间，默认按 **UTC+9（Asia/Tokyo）** 换算（`components/rtc_board/rtc_board.c` 顶部 `RTC_TZ_OFFSET_SEC` 是唯一定义处，换时区只改这一处）；系统时钟 `time()` 保持 UTC。
+- **RTC 存的是 UTC**：`AR1T` 写入什么就是什么，不做任何时区换算。屏幕显示 = RTC 里的 UTC + `AR1Z` 偏移（默认 `480` = UTC+8，存于 NVS namespace `airremote_time`、key `tz_min`）。**换时区只需重发 `AR1Z`，不用重发时间**；反过来说，改时区偏移不会改变已经写进 RTC 的绝对时间。
+- `AR1T` 参数是无符号十进制、范围 2024–2099（之外回 `AR1T ERR`）；`AR1Z` 是全范围 -720…+840 的有符号十进制（越界回 `AR1Z ERR`）。
+- 时区换算只在 `components/rtc_board/rtc_board.c` 一处（默认值 `RTC_TZ_DEFAULT_MIN`，读回偏移 `s_tz_minutes`）；系统时钟 `time()` 始终是 UTC。
 - SSID 和密码都用十六进制表示，按字节编码；SSID 1–32 字节，密码 8–63 字节。密码可传 `-` 表示空（开放网络）。
 - 命令以 `\n` 结尾，`\r` 会被忽略；单行上限 219 字节。
 - 配置保存在 NVS namespace `airremote`、key `wifi`，内容为 `wifi_sta_config_t`；重新配网会覆盖。
@@ -179,7 +182,7 @@ windows\Flash.cmd
 - 两个模式互斥，模式按钮在另一模式进行中禁用。
 - 亮度在活动/录音时为 70，空闲 25 秒后降到 24。
 - 电量每秒通过 AXP2101 刷新；无电池时显示 `--`。
-- 左上角日期 + 时钟：有系统时间（`AR1T` 之后，UTC+9）就按 `time()` 格式化，否则每约 1 秒读一次 PCF85063A；两者都不可用时显示 `----/--/--` 与 `--:--`。`render()` 里 1 秒采样一次，且只在文本真正变化时才 `lv_label_set_text`。
+- 左上角日期 + 时钟 = 时间源（`time()`，`AR1T` 之后可用；否则每约 1 秒读一次 PCF85063A）+ `AR1Z` 偏移；两者都没有可用时间时显示 `----/--/--` 与 `--:--`。`render()` 里 1 秒采样一次，且只在文本真正变化时才 `lv_label_set_text`。
 - 状态文字是事件而不是常驻提示：`Mouse stopped`、`PC voice unavailable` 等 3 秒后自动消失，因此空闲屏幕上只有日期、时间与右上角图标。
 - Gyro 校准进度与失败结果走屏幕中央的小弹窗（`Hold the board still...` / `Calibration failed, try again`，失败信息 1.5 秒后自动关闭）；弹窗不用 `lv_msgbox`，避免它自己的事件循环挡住 A/B 的触摸。
 - UI 刷新定时器 125 ms，渲染时同步 A/B 按钮的可用状态和提示文字。
@@ -297,7 +300,7 @@ env/                     # 环境配置（gitignore）：ESP-IDF 5.5.5 + 工具�
 | 触摸（CST9217 I2C + INT/RST） | `bsp_board` | `display_bsp.cpp` |
 | PMU/电池（AXP2101） | `bsp_board` | `power_bsp.cpp`（只动 ALDO3 面板复位轨） |
 | IMU（QMI8658） | `bsp_board`/`app_mouse` | `board.cpp`（总线）、`app_mouse/air_mouse.c` |
-| 实时时钟（PCF85063A、掉电保持、`HH:MM`） | `rtc_board` | `components/rtc_board/rtc_board.c`、`include/rtc_board.h` |
+| 实时时钟（PCF85063A、RTC 存 UTC、显示时区 `AR1Z`、掉电保持待实测） | `rtc_board` | `components/rtc_board/rtc_board.c`、`include/rtc_board.h` |
 | 陀螺仪空中鼠标 / A-B 按键 | `app_mouse` | `air_mouse.c`、`air_mouse.h` |
 | BLE HID（GATTS 回调、CCC 就绪、按键对账、release/resume） | `app_mouse` | `ble_mouse.c`、`ble_mouse.h` |
 | LVGL UI（状态/Gyro/Voice/A/B、亮度息屏、左上角时钟） | `app_ui` | `components/app_ui/app_ui.c` |

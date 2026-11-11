@@ -1,4 +1,4 @@
-﻿#include "provision.h"
+#include "provision.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -104,6 +104,29 @@ static void set_time(const char *text)
     printf("AR1T OK %lld\n", value);
 }
 
+static void set_timezone(const char *text)
+{
+    /* Minutes east of UTC, e.g. 480 for UTC+8. Optional leading '-', no '+',
+     * no trailing garbage; the range guard lives in rtc_board as well. */
+    if (!text[0] || text[0] == '+') {
+        puts("AR1Z ERR");
+        return;
+    }
+    char *end = NULL;
+    errno = 0;
+    long value = strtol(text, &end, 10);
+    if (errno != 0 || end == text || *end != 0 || value < -720 || value > 840) {
+        puts("AR1Z ERR");
+        return;
+    }
+    if (rtc_board_set_tz_minutes((int)value) != ESP_OK) {
+        puts("AR1Z ERR");
+        return;
+    }
+    app_ui_refresh_clock();
+    printf("AR1Z OK %ld\n", value);
+}
+
 static void serial_task(void *unused)
 {
     char line[220];
@@ -125,6 +148,7 @@ static void serial_task(void *unused)
                 }
                 if (!overflow && strncmp(line, "AR1W ", 5) == 0) set_wifi(line + 5);
                 if (!overflow && strncmp(line, "AR1T ", 5) == 0) set_time(line + 5);
+                if (!overflow && strncmp(line, "AR1Z ", 5) == 0) set_timezone(line + 5);
                 /* TEMP: start a voice session over USB for memory/protocol
                  * testing while the touch panel is not being operated. */
                 if (!overflow && strcmp(line, "AR1V") == 0) {

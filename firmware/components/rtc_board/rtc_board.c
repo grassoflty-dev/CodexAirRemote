@@ -5,9 +5,9 @@
  * backed by the VBAT cells ("CHG RTC" net on the schematic), so the time keeps
  * running while the board is powered off.
  *
- * This file is the single place that knows both the register layout and the
- * time zone: the RTC stores local time (UTC+9, Asia/Tokyo) while the system
- * clock (time()) stays UTC, and the two are converted here only.
+ * The RTC stores **UTC**; the display time zone is a separate, host-set offset
+ * in minutes (`AR1Z`), persisted in NVS, defaulting to UTC+8. This file is the
+ * single place that knows both the register layout and the local conversion.
  */
 #include "rtc_board.h"
 
@@ -19,6 +19,7 @@
 #include "board.h"
 #include "driver/i2c_master.h"
 #include "esp_log.h"
+#include "nvs.h"
 
 static const char *TAG = "rtc";
 
@@ -46,16 +47,18 @@ static const char *TAG = "rtc";
 #define RTC_MAX_UNIX 4102444799LL /* 2099-12-31T23:59:59Z */
 #define RTC_MIN_YEAR 2024
 
-/* ESP-IDF's newlib has no time zone configured (TZ is unset and nothing calls
- * tzset()), so localtime_r() would return UTC. Converting with gmtime_r() on a
- * shifted epoch keeps the offset in one place instead of relying on env vars.
- *
- * The offset matches where the board lives: Asia/Tokyo (UTC+9, no DST). If the
- * board moves time zones this single constant is the only place to change. */
-#define RTC_TZ_OFFSET_SEC (9 * 3600) /* UTC+9, Asia/Tokyo */
+/* Display time zone: minutes east of UTC, more negative or western zones kept
+ * inside -12 h..+14 h. The default applies until the host sends AR1Z; the value
+ * is persisted in NVS so a reboot keeps the user's choice. */
+#define RTC_TZ_DEFAULT_MIN 480 /* UTC+8 */
+#define RTC_TZ_MIN (-720)
+#define RTC_TZ_MAX 840
+#define RTC_NVS_NAMESPACE "airremote_time"
+#define RTC_NVS_TZ_KEY "tz_min"
 
 static i2c_master_dev_handle_t s_rtc;
 static bool s_present;
+static int s_tz_minutes = RTC_TZ_DEFAULT_MIN;
 
 static uint8_t to_bcd(int value)
 {
@@ -78,7 +81,8 @@ static esp_err_t rtc_read(uint8_t reg, uint8_t *data, size_t length)
 }
 
 /* Read the seven time registers into a struct tm using the usual conventions
- * (year since 1900, month 0..11). The values are local time. */
+ * (year since 1900, month 0..11). The values are UTC, matching what AR1T
+ * writes; the display offset is applied later in current_local(). */
 static esp_err_t read_fields(struct tm *out)
 {
     uint8_t regs[RTC_TIME_REGS];
@@ -119,11 +123,85 @@ static bool fields_valid(const struct tm *value)
            value->tm_sec >= 0 && value->tm_sec <= 59;
 }
 
+/* Days since 1970-01-01 for a civil date (proleptic Gregorian, Hinnant's
+ * algorithm). newlib ships no timegm(), and this keeps the UTC conversion
+ * independent of the process time zone env var. */
+static int64_t days_from_civil(int year, int month, int day)
+{
+    int y = year - (month <= 2);
+    int era = (y >= 0 ? y : y - 399) / 400;
+    int yoe = y - era * 400;
+    int doy = (153 * (month + (month > 2 ? -3 : 9)) + 2) / 5 + day - 1;
+    int doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    return (int64_t)era * 146097 + doe - 719468;
+}
+
+/* UTC epoch seconds for the register values (they are UTC on the wire). */
+static int64_t unix_from_fields(const struct tm *value)
+{
+    int64_t days = days_from_civil(value->tm_year + 1900, value->tm_mon + 1, value->tm_mday);
+    return days * 86400 + value->tm_hour * 3600 + value->tm_min * 60 + value->tm_sec;
+}
+
+/* Current UTC epoch: the system clock wins once anything (AR1T, SNTP in the
+ * future) has set it, because it keeps running on esp_timer between reads and
+ * never needs I2C; otherwise fall back to the battery-backed RTC. */
+static bool current_utc(int64_t *unix_seconds)
+{
+    time_t ticks = time(NULL);
+    if ((int64_t)ticks >= RTC_MIN_UNIX) {
+        *unix_seconds = (int64_t)ticks;
+        return true;
+    }
+    struct tm now;
+    if (!s_present || read_fields(&now) != ESP_OK || !fields_valid(&now)) {
+        return false;
+    }
+    *unix_seconds = unix_from_fields(&now);
+    return *unix_seconds >= RTC_MIN_UNIX;
+}
+
+/* UTC + the configured offset, broken down for the display. */
+static bool current_local(struct tm *out)
+{
+    int64_t utc = 0;
+    if (!current_utc(&utc)) {
+        return false;
+    }
+    time_t local = (time_t)(utc + (int64_t)s_tz_minutes * 60);
+    gmtime_r(&local, out);
+    return true;
+}
+
+/* Load the persisted display offset. Runs before the I2C probe so a missing RTC
+ * still shows the host's chosen zone once the system clock is set. */
+static void load_timezone(void)
+{
+    nvs_handle_t handle;
+    int32_t minutes = 0;
+    if (nvs_open(RTC_NVS_NAMESPACE, NVS_READONLY, &handle) != ESP_OK) {
+        return;
+    }
+    esp_err_t err = nvs_get_i32(handle, RTC_NVS_TZ_KEY, &minutes);
+    nvs_close(handle);
+    if (err != ESP_OK) {
+        /* Nothing stored yet: keep the built-in default. */
+        return;
+    }
+    if (minutes < RTC_TZ_MIN || minutes > RTC_TZ_MAX) {
+        ESP_LOGW(TAG, "ignoring stored tz %ld min, out of range",
+                 (long)minutes);
+        return;
+    }
+    s_tz_minutes = (int)minutes;
+}
+
 esp_err_t rtc_board_init(void)
 {
     if (s_present) {
         return ESP_OK;
     }
+    load_timezone();
     i2c_master_bus_handle_t bus = board_i2c_bus();
     if (!bus) {
         return ESP_ERR_INVALID_STATE;
@@ -159,9 +237,14 @@ esp_err_t rtc_board_init(void)
 
     struct tm now;
     if (read_fields(&now) == ESP_OK && fields_valid(&now)) {
-        ESP_LOGI(TAG, "PCF85063A ready, RTC holds %04d-%02d-%02d %02d:%02d:%02d (UTC%+d, control 0x%02x)",
+        int64_t utc = unix_from_fields(&now);
+        time_t local = (time_t)(utc + (int64_t)s_tz_minutes * 60);
+        struct tm shown;
+        gmtime_r(&local, &shown);
+        ESP_LOGI(TAG, "PCF85063A ready, RTC holds %04d-%02d-%02d %02d:%02d:%02d UTC, display %04d-%02d-%02d %02d:%02d:%02d (tz %+d min), control 0x%02x",
                  now.tm_year + 1900, now.tm_mon + 1, now.tm_mday, now.tm_hour, now.tm_min,
-                 now.tm_sec, RTC_TZ_OFFSET_SEC / 3600, control);
+                 now.tm_sec, shown.tm_year + 1900, shown.tm_mon + 1, shown.tm_mday, shown.tm_hour,
+                 shown.tm_min, shown.tm_sec, s_tz_minutes, control);
     } else {
         ESP_LOGW(TAG, "PCF85063A ready but its time is unset; send AR1T <unix> to set it");
     }
@@ -173,20 +256,7 @@ bool rtc_board_present(void)
     return s_present;
 }
 
-/* Current local wall time: the system clock wins once anything (AR1T, SNTP in
- * the future) has set it, because it keeps running on esp_timer between reads
- * and never needs I2C; otherwise fall back to the battery-backed RTC. */
-static bool current_local(struct tm *out)
-{
-    time_t ticks = time(NULL);
-    if ((int64_t)ticks >= RTC_MIN_UNIX) {
-        time_t local = ticks + RTC_TZ_OFFSET_SEC;
-        gmtime_r(&local, out);
-        return true;
-    }
-    return s_present && read_fields(out) == ESP_OK && fields_valid(out);
-}
-
+/* Current local wall time: system clock or RTC (both UTC) + the NVS offset. */
 void rtc_board_time_text(char *out, size_t size)
 {
     if (!out || size == 0) {
@@ -238,16 +308,56 @@ esp_err_t rtc_board_set_unix(int64_t unix_seconds)
         ESP_LOGW(TAG, "no RTC to persist the time, system clock only");
         return ESP_ERR_INVALID_STATE;
     }
-    time_t local = (time_t)unix_seconds + RTC_TZ_OFFSET_SEC;
+    /* The register file holds UTC: the display offset is applied on read only,
+     * so changing AR1Z never needs the time to be sent again. */
     struct tm when;
-    gmtime_r(&local, &when);
+    time_t utc = (time_t)unix_seconds;
+    gmtime_r(&utc, &when);
     esp_err_t err = write_fields(&when);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "cannot write the RTC: %s", esp_err_to_name(err));
         return err;
     }
-    ESP_LOGI(TAG, "RTC set to %04d-%02d-%02d %02d:%02d:%02d local, unix %lld",
+    ESP_LOGI(TAG, "RTC set to %04d-%02d-%02d %02d:%02d:%02d UTC, unix %lld",
              when.tm_year + 1900, when.tm_mon + 1, when.tm_mday, when.tm_hour, when.tm_min,
              when.tm_sec, (long long)unix_seconds);
+    return ESP_OK;
+}
+
+int rtc_board_tz_minutes(void)
+{
+    return s_tz_minutes;
+}
+
+esp_err_t rtc_board_set_tz_minutes(int minutes)
+{
+    if (minutes < RTC_TZ_MIN || minutes > RTC_TZ_MAX) {
+        ESP_LOGW(TAG, "rejecting tz %d min, outside %d..%d", minutes, RTC_TZ_MIN, RTC_TZ_MAX);
+        return ESP_ERR_INVALID_ARG;
+    }
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(RTC_NVS_NAMESPACE, NVS_READWRITE, &handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "cannot open NVS for the time zone: %s", esp_err_to_name(err));
+        return err;
+    }
+    err = nvs_set_i32(handle, RTC_NVS_TZ_KEY, minutes);
+    if (err == ESP_OK) {
+        err = nvs_commit(handle);
+    }
+    nvs_close(handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "cannot store the time zone: %s", esp_err_to_name(err));
+        return err;
+    }
+    s_tz_minutes = minutes;
+    struct tm shown;
+    if (current_local(&shown)) {
+        ESP_LOGI(TAG, "display tz set to %+d min, local now %04d-%02d-%02d %02d:%02d:%02d",
+                 minutes, shown.tm_year + 1900, shown.tm_mon + 1, shown.tm_mday, shown.tm_hour,
+                 shown.tm_min, shown.tm_sec);
+    } else {
+        ESP_LOGW(TAG, "display tz set to %+d min, but no valid time source yet", minutes);
+    }
     return ESP_OK;
 }
