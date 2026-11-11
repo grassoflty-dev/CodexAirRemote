@@ -60,6 +60,7 @@ interface SerialPortInstance {
   isOpen?: boolean
   open(callback: (error: Error | null) => void): void
   close(callback?: (error?: Error | null) => void): void
+  destroy?(error?: Error | null): void
   write(data: string, callback?: (error?: Error | null) => void): unknown
   on(event: string, listener: (...args: never[]) => void): unknown
   off?(event: string, listener: (...args: never[]) => void): unknown
@@ -223,18 +224,8 @@ async function syncWithSerialport(
   const decoder = new StringDecoder('utf8')
   let buffer = ''
   let pending: PendingLine | undefined
-
-  const port = new module.SerialPort({
-    path,
-    baudRate: BOARD_BAUD_RATE,
-    dataBits: 8,
-    stopBits: 1,
-    parity: 'none',
-    rtscts: false,
-    xon: false,
-    xoff: false,
-    autoOpen: false
-  })
+  /** 只有真正 new 出来的端口才需要关；构造就抛错时保持 undefined。 */
+  let port: SerialPortInstance | undefined
 
   const take = (line: string): void => {
     lines.push(line)
@@ -289,28 +280,44 @@ async function syncWithSerialport(
       }
     })
 
-  const writeLine = (command: string): Promise<void> =>
-    new Promise<void>((resolve, reject) => {
-      port.write(`${command}\n`, (error?: Error | null) => {
-        if (error === null || error === undefined) {
-          sent.push(command)
-          resolve()
-        } else {
-          reject(new BoardSyncError('internal', `写串口失败：${error.message}`, lines.slice()))
-        }
+  // 整个生命周期（构造 → 打开 → 挂监听 → 收发 → 关闭）都在 try/finally 里：
+  // 任何一步抛异常（包括 `port.on('data')` 这类流内部错误）都必须把端口关掉，
+  // 否则 Windows 的串口会被这个进程一直占着，之后所有 open 都是 Access denied。
+  try {
+    port = new module.SerialPort({
+      path,
+      baudRate: BOARD_BAUD_RATE,
+      dataBits: 8,
+      stopBits: 1,
+      parity: 'none',
+      rtscts: false,
+      xon: false,
+      xoff: false,
+      autoOpen: false
+    })
+
+    await new Promise<void>((resolve, reject) => {
+      port!.open((error) => {
+        if (error === null || error === undefined) resolve()
+        else reject(new BoardSyncError('open-failed', openFailureMessage(path, error), lines.slice()))
       })
     })
 
-  await new Promise<void>((resolve, reject) => {
-    port.open((error) => {
-      if (error === null || error === undefined) resolve()
-      else reject(new BoardSyncError('open-failed', `打开串口 ${path} 失败：${error.message}`))
-    })
-  })
+    port.on('data', onData)
+    port.on('error', onError)
 
-  port.on('data', onData)
-  port.on('error', onError)
-  try {
+    const writeLine = (command: string): Promise<void> =>
+      new Promise<void>((resolve, reject) => {
+        port!.write(`${command}\n`, (error?: Error | null) => {
+          if (error === null || error === undefined) {
+            sent.push(command)
+            resolve()
+          } else {
+            reject(new BoardSyncError('internal', `写串口失败：${error.message}`, lines.slice()))
+          }
+        })
+      })
+
     const timeCommand = `AR1T ${String(unixSeconds)}`
     const timeReply = expect(/^AR1T OK\b/i, /^AR1T ERR\b/i, `等待 ${timeCommand} 的回包超时`)
     void timeReply.catch(() => undefined)
@@ -324,23 +331,75 @@ async function syncWithSerialport(
     await zoneReply
 
     return { sent: sent.slice(), lines: lines.slice() }
+  } catch (error) {
+    pending = undefined
+    if (error instanceof BoardSyncError) throw error
+    // 非预期异常：带上栈的前几帧，方便定位是流内部还是驱动层的问题。
+    throw new BoardSyncError('internal', `串口同步失败：${describeUnexpected(error)}`, lines.slice())
   } finally {
     pending = undefined
-    const detach = port.off ?? port.removeListener
-    detach?.('data', onData)
-    detach?.('error', onError)
-    await closeSerialPort(port)
+    if (port !== undefined) {
+      const detach = port.off ?? port.removeListener
+      try {
+        detach?.('data', onData)
+        detach?.('error', onError)
+      } catch {
+        /* 已经坏掉的流，detach 也可能抛，忽略即可 */
+      }
+      await closeSerialPort(port)
+    }
   }
 }
 
-async function closeSerialPort(port: SerialPortInstance): Promise<void> {
-  if (port.isOpen === false) return
-  await new Promise<void>((resolve) => {
-    const done = (): void => resolve()
+/** 打开失败时给人看的原因：把「被别的程序占着」说清楚，别只丢一个 Access denied。 */
+function openFailureMessage(path: string, error: Error): string {
+  const detail = error.message
+  if (/access is denied|access denied|拒绝访问|被拒绝/i.test(detail)) {
+    return `打开串口 ${path} 失败：端口被占用，请关闭串口监视器 / 烧录工具后重试（${detail}）`
+  }
+  return `打开串口 ${path} 失败：${detail}`
+}
+
+/** 非预期异常的简短描述（类型 + 消息 + 栈顶一帧）。 */
+function describeUnexpected(error: unknown): string {
+  if (!(error instanceof Error)) return String(error)
+  const frame = (error.stack ?? '').split('\n').find((line) => line.trim().startsWith('at '))
+  return frame === undefined ? `${error.name}: ${error.message}` : `${error.name}: ${error.message} (${frame.trim()})`
+}
+
+/**
+ * 关闭端口：正常 close 走回调；回调一直不来或流已经半死时用 `destroy()` 兜底。
+ * 无论走哪条路都只 resolve 一次，不会把异常再抛给调用方。
+ */
+function closeSerialPort(port: SerialPortInstance): Promise<void> {
+  return new Promise<void>((resolve) => {
+    let settled = false
+    const finish = (): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolve()
+    }
+    const destroy = (): void => {
+      try {
+        port.destroy?.()
+      } catch {
+        /* 端口可能已经没了，忽略 */
+      }
+    }
+    const timer = setTimeout(() => {
+      destroy()
+      finish()
+    }, 1000)
+    timer.unref?.()
     try {
-      port.close(() => done())
+      port.close(() => {
+        if (port.isOpen === true) destroy()
+        finish()
+      })
     } catch {
-      done()
+      destroy()
+      finish()
     }
   })
 }
