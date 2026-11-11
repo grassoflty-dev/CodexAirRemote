@@ -1,121 +1,68 @@
-import type { IEspLoaderTerminal, Transport as EsptoolTransport } from 'esptool-js'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 /**
- * Browser-side firmware flashing for the bundled merged image.
+ * 「固件烧录」设置区块：浏览器端只负责展示固件身份、发起 / 取消烧录、渲染进度与日志；
+ * 真正碰串口的烧录由宿主（Node 侧，同源 `/airremote/flash` WebSocket 路由）执行。
  *
- * Web Serial API notes (esptool-js 0.7.1, verified against
- * `node_modules/esptool-js/lib/*.d.ts` and `lib/*.js`):
+ * 为什么不再用浏览器 Web Serial：DSH 桌面窗口是 Electron，宿主显式设置了
+ * `setDevicePermissionHandler(() => false)`，浏览器侧的 Web Serial API 拿不到任何串口；
+ * 而正式插件必须自包含，不能要求用户另开浏览器。宿主本来就有 serialport 依赖和
+ * 串口占用协调（`/airremote/serial-hold`），把烧录放宿主既可用，也不会和「时间同步」抢串口。
  *
- *  - `new Transport(port, true)` takes the `SerialPort` and a tracing flag.
- *  - `new ESPLoader({ transport, baudrate: 460800, terminal })`; `loader.main()`
- *    returns the chip description string (for this board: "ESP32-C6
- *    (revision v0.1)"), so callers must validate it against the C6 family.
- *  - `flashOptions.fileArray[].data` is a **Uint8Array** in 0.7.1 (older
- *    examples used a binary string); `calculateMD5Hash` is optional, not a
- *    required callback. We deliberately omit it: the image is already checked
- *    against the manifest's SHA-256 before the serial port is touched.
- *  - `reportProgress(fileIndex, written, total)` reports uncompressed bytes.
- *  - `loader.after('hard_reset')` is the 0.7.1 hard-reset entry point.
+ * 固定协议：
+ *   浏览器 → 宿主：{type:'start'} / {type:'cancel'}
+ *   宿主 → 浏览器：
+ *     {type:'state', phase:'idle'|'busy'|'running'|'done'|'error'|'cancelled'}
+ *     {type:'busy', message}
+ *     {type:'log', line}
+ *     {type:'progress', percent, written, total}
+ *     {type:'done', port, seconds}
+ *     {type:'error', code, message}
  *
- * The module is imported lazily so the ~500 KB esptool bundle is not part of
- * the first paint. esptool-js 0.7.1 no longer references Node's `Buffer` at all
- * (grep of lib/*.js), so no `buffer` polyfill is required; if a future release
- * reintroduces it, polyfill `globalThis.Buffer` before the dynamic import.
+ * 挂载只做两件事：GET `/airremote/firmware/manifest`、建立**一次** WS。不自动烧录、
+ * 不轮询、不监听插拔；断线后只有用户点「重新连接」才会重连。
  */
 
-declare global {
-  interface SerialPortInfo {
-    usbVendorId?: number
-    usbProductId?: number
-  }
-  interface SerialPort {
-    getInfo(): SerialPortInfo
-    open(options: { baudRate: number }): Promise<void>
-    close(): Promise<void>
-    readable: ReadableStream<Uint8Array> | null
-    writable: WritableStream<Uint8Array> | null
-  }
-  interface SerialPortFilter {
-    usbVendorId?: number
-    usbProductId?: number
-  }
-  interface SerialPortRequestOptions {
-    filters?: SerialPortFilter[]
-  }
-  interface Serial {
-    requestPort(options?: SerialPortRequestOptions): Promise<SerialPort>
-    getPorts(): Promise<SerialPort[]>
-  }
-  interface Navigator {
-    readonly serial?: Serial
-  }
-}
-
-const ESPRESSIF_VID = 0x303a
-const FLASH_BAUDRATE = 460800
 const MAX_LOG_LINES = 200
-const DISCONNECT_TIMEOUT_MS = 5000
 const SUPPORTED_CHIP = 'esp32c6'
-const WEB_SERIAL_UNSUPPORTED =
-  '当前环境不支持 Web Serial：请用 Chrome/Edge 打开 http://127.0.0.1:57648（DSH 桌面窗口禁用了 Web Serial）'
+const FLASH_WS_PATH = '/airremote/flash'
 const NVS_WARNING =
   '合并固件从 0x0 整体写入，会覆盖 nvs 分区：烧录会清除开发板上的 Wi-Fi 配网与时区设置，烧录后需重新配网并再次同步时间。'
+const NVS_CONFIRM = '烧录会清除开发板上的 Wi-Fi 配网与时区设置，烧录后需重新配网并再次同步时间。'
 
 interface FirmwareManifest {
   version: string
-  commit?: string
   builtAt?: string
   size: number
   sha256: string
   chip: string
-  flashOffset: number
 }
 
-interface HoldResponse {
-  ok?: boolean
-  holder?: string
-  error?: string
-  message?: string
-}
+/** 宿主回报的烧录阶段。`busy` 表示宿主侧已有一次烧录在跑。 */
+type ServerPhase = 'idle' | 'busy' | 'running' | 'done' | 'error' | 'cancelled'
 
-interface StatusLine {
-  tone: 'info' | 'ok' | 'error'
-  text: string
-  retry?: boolean
-}
+type Connection = 'connecting' | 'open' | 'closed'
 
-interface FlashProgress {
-  phase: string
+type Status =
+  | { kind: 'info'; text: string }
+  | { kind: 'error'; text: string }
+  | { kind: 'done'; port: string; seconds: number | null }
+
+interface Progress {
   percent: number
   written: number
   total: number
 }
 
-type FlashFailureKind = 'image' | 'sha' | 'busy' | 'chip' | 'timeout' | 'disconnected' | 'other'
-
-class FlashFailure extends Error {
-  readonly kind: FlashFailureKind
-
-  constructor(kind: FlashFailureKind, message: string) {
-    super(message)
-    this.name = 'FlashFailure'
-    this.kind = kind
-  }
-}
-
-type EsptoolModule = typeof import('esptool-js')
-
-let esptoolPromise: Promise<EsptoolModule> | null = null
-
-async function loadEsptool(): Promise<EsptoolModule> {
-  if (esptoolPromise === null) esptoolPromise = import('esptool-js')
-  return await esptoolPromise
-}
-
-function getSerial(): Serial | undefined {
-  if (typeof navigator === 'undefined') return undefined
-  return navigator.serial
+/** 宿主 error code → 中文。没有列出的 code（含 `internal`）直接用宿主的 message。 */
+const ERROR_TEXT: Record<string, string> = {
+  'no-board': '未找到开发板（USB VID 303A）',
+  'open-failed': '串口打不开（可能被占用）',
+  timeout: '板子没有响应',
+  rejected: '板子拒绝了命令',
+  busy: '串口正被占用',
+  'sha256-mismatch': '固件文件损坏（sha256 不匹配）',
+  cancelled: '已取消'
 }
 
 function errorText(error: unknown): string {
@@ -137,61 +84,16 @@ function formatBuiltAt(value: string | undefined): string {
   return date.toLocaleString()
 }
 
-function formatUsbId(value: number | undefined): string {
-  if (typeof value !== 'number') return '未知'
-  return `0x${value.toString(16).padStart(4, '0')}`
+function formatSeconds(seconds: number | null): string {
+  if (seconds === null || !Number.isFinite(seconds)) return '耗时未知'
+  return `${seconds.toFixed(1)}s`
 }
 
-function toHex(buffer: ArrayBuffer): string {
-  return Array.from(new Uint8Array(buffer), (byte) => byte.toString(16).padStart(2, '0')).join('')
-}
-
-/** "ESP32-C6 (revision v0.1)" and "unknown ESP32-C6 ..." pass; ESP32-C61 does not. */
-function isEsp32C6(chip: string): boolean {
-  return /ESP32-C6\b/i.test(chip)
-}
-
-function describeFailure(error: unknown): { text: string; reselect: boolean } {
-  if (error instanceof FlashFailure) {
-    switch (error.kind) {
-      case 'image':
-        return { text: `${error.message}，请稍后重试。`, reselect: false }
-      case 'sha':
-        return { text: '固件文件损坏（sha256 不匹配）', reselect: false }
-      case 'busy':
-        return { text: '串口正被其它操作占用，请结束时间同步等操作后重试。', reselect: false }
-      case 'chip':
-        return { text: error.message, reselect: false }
-      case 'timeout':
-        return { text: '烧录超时：开发板没有在预期时间内响应，请检查 USB 线材与供电后重试。', reselect: false }
-      case 'disconnected':
-        return { text: '串口连接已断开（开发板可能被拔出），请重新插拔开发板并重新选择串口后重试。', reselect: true }
-      default:
-        return { text: `烧录失败：${error.message}`, reselect: false }
-    }
-  }
-
-  const name = error instanceof Error ? error.name : ''
-  const message = errorText(error)
-  const lower = message.toLowerCase()
-
-  if (name === 'TimeoutError' || lower.includes('timeout') || lower.includes('timed out')) {
-    return { text: '烧录超时：开发板没有在预期时间内响应，请检查 USB 线材与供电后重试。', reselect: false }
-  }
-  if (
-    name === 'NotFoundError' ||
-    name === 'NetworkError' ||
-    lower.includes('serial port closed') ||
-    lower.includes('device has been lost') ||
-    lower.includes('device lost') ||
-    lower.includes('disconnected')
-  ) {
-    return { text: '串口连接已断开（串口掉线），请重新插拔开发板并重新选择串口后重试。', reselect: true }
-  }
-  if (lower.includes('failed to connect') || lower.includes('no serial data received')) {
-    return { text: '无法连接开发板：请确认串口未被其它程序占用、开发板已进入下载模式后重试。', reselect: false }
-  }
-  return { text: `烧录失败：${message === '' ? '未知错误' : message}`, reselect: false }
+function describeError(code: string, message: string): string {
+  const known = ERROR_TEXT[code]
+  if (known !== undefined) return known
+  const trimmed = message.trim()
+  return trimmed === '' ? '烧录失败' : trimmed
 }
 
 function parseManifest(value: unknown): FirmwareManifest | null {
@@ -202,108 +104,163 @@ function parseManifest(value: unknown): FirmwareManifest | null {
   if (typeof record.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(record.sha256)) return null
   return {
     version: record.version,
-    commit: typeof record.commit === 'string' ? record.commit : undefined,
     builtAt: typeof record.builtAt === 'string' ? record.builtAt : undefined,
     size: record.size,
     sha256: record.sha256,
-    chip: typeof record.chip === 'string' && record.chip !== '' ? record.chip : SUPPORTED_CHIP,
-    flashOffset: typeof record.flashOffset === 'number' ? record.flashOffset : 0
+    chip: typeof record.chip === 'string' && record.chip !== '' ? record.chip : SUPPORTED_CHIP
   }
 }
 
-async function setSerialHolder(holder: 'flash' | 'none'): Promise<HoldResponse> {
-  const response = await fetch('/airremote/serial-hold', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ holder })
-  })
-  const data = (await response.json().catch(() => ({}))) as HoldResponse
-  if (!response.ok && data.ok !== false) {
-    return { ok: false, error: `http-${response.status}`, message: `HTTP ${response.status}` }
-  }
-  return data
-}
-
-async function disconnectTransport(transport: EsptoolTransport, log: (line: string) => void): Promise<void> {
-  const pending = transport.disconnect().catch((error: unknown) => {
-    log(`!!! 关闭串口失败：${errorText(error)}`)
-  })
-  let timer: ReturnType<typeof setTimeout> | undefined
-  const timeout = new Promise<void>((resolve) => {
-    timer = setTimeout(() => {
-      log('!!! 关闭串口超时（5 秒），继续释放串口占用')
-      resolve()
-    }, DISCONNECT_TIMEOUT_MS)
-  })
-  try {
-    await Promise.race([pending, timeout])
-  } finally {
-    if (timer !== undefined) clearTimeout(timer)
-  }
+function readPhase(value: unknown): ServerPhase | null {
+  if (value === 'idle' || value === 'running' || value === 'done') return value
+  if (value === 'busy' || value === 'error' || value === 'cancelled') return value
+  return null
 }
 
 /**
- * Settings section: shows the bundled firmware manifest and flashes it through
- * Web Serial only after an explicit button press. No mount-time serial access,
- * no polling, no hot-plug listeners — selecting a port and flashing are both
- * user gestures, and the host-side serial holder is released in `finally`.
+ * 设置区块：只有「固件身份 + 开始/取消 + 进度 + 日志」。
+ * 串口选择、VID/PID、擦除整片这些都属于宿主侧决策，浏览器不再参与。
  */
 export function FirmwareFlash() {
   const [manifest, setManifest] = useState<FirmwareManifest | null>(null)
   const [manifestError, setManifestError] = useState<string | null>(null)
-  const [port, setPort] = useState<SerialPort | null>(null)
-  const [portInfo, setPortInfo] = useState<SerialPortInfo | null>(null)
-  const [selecting, setSelecting] = useState(false)
-  const [flashing, setFlashing] = useState(false)
-  const [eraseAll, setEraseAll] = useState(false)
-  const [progress, setProgress] = useState<FlashProgress | null>(null)
-  const [status, setStatus] = useState<StatusLine | null>(null)
+  const [connection, setConnection] = useState<Connection>('connecting')
+  const [phase, setPhase] = useState<ServerPhase>('idle')
+  const [startSent, setStartSent] = useState(false)
+  const [cancelSent, setCancelSent] = useState(false)
+  const [progress, setProgress] = useState<Progress | null>(null)
+  const [status, setStatus] = useState<Status | null>(null)
   const [lines, setLines] = useState<string[]>([])
 
-  const logLinesRef = useRef<string[]>([])
-  const partialLineRef = useRef('')
+  const socketRef = useRef<WebSocket | null>(null)
   const logBoxRef = useRef<HTMLDivElement | null>(null)
 
-  const publishLogs = useCallback(() => {
-    const partial = partialLineRef.current
-    const combined = partial === '' ? logLinesRef.current.slice() : [...logLinesRef.current, partial]
-    setLines(combined.length > MAX_LOG_LINES ? combined.slice(combined.length - MAX_LOG_LINES) : combined)
+  const appendLine = useCallback((line: string) => {
+    setLines((previous) => {
+      const next = previous.concat(line)
+      return next.length > MAX_LOG_LINES ? next.slice(next.length - MAX_LOG_LINES) : next
+    })
   }, [])
 
-  const appendLogText = useCallback(
-    (text: string) => {
-      if (text === '') return
-      const parts = (partialLineRef.current + text).split('\n')
-      partialLineRef.current = parts.pop() ?? ''
-      const next = logLinesRef.current.concat(parts)
-      logLinesRef.current = next.length > MAX_LOG_LINES ? next.slice(next.length - MAX_LOG_LINES) : next
-      publishLogs()
+  /** 处理宿主推来的每一条消息；只依赖稳定的 setter，因此引用恒定。 */
+  const handleServerMessage = useCallback(
+    (raw: unknown) => {
+      if (typeof raw !== 'string') return
+      let value: unknown
+      try {
+        value = JSON.parse(raw)
+      } catch {
+        return
+      }
+      if (typeof value !== 'object' || value === null) return
+      const message = value as Record<string, unknown>
+
+      switch (message.type) {
+        case 'state': {
+          const next = readPhase(message.phase)
+          if (next === null) return
+          setPhase(next)
+          setStartSent(false)
+          setCancelSent(false)
+          if (next === 'cancelled') setStatus({ kind: 'info', text: '已取消' })
+          return
+        }
+        case 'busy': {
+          setPhase('busy')
+          setStartSent(false)
+          const detail = typeof message.message === 'string' ? message.message.trim() : ''
+          setStatus({ kind: 'error', text: detail === '' ? '宿主侧已有烧录在进行中，请等它结束后重试。' : detail })
+          return
+        }
+        case 'log': {
+          if (typeof message.line !== 'string') return
+          appendLine(message.line)
+          return
+        }
+        case 'progress': {
+          const written = typeof message.written === 'number' && Number.isFinite(message.written) ? message.written : 0
+          const total = typeof message.total === 'number' && Number.isFinite(message.total) ? message.total : 0
+          const computed = total > 0 ? Math.round((written / total) * 100) : 0
+          const rawPercent =
+            typeof message.percent === 'number' && Number.isFinite(message.percent) ? message.percent : computed
+          const percent = Math.max(0, Math.min(100, Math.round(rawPercent)))
+          setProgress({ percent, written, total })
+          return
+        }
+        case 'done': {
+          const port = typeof message.port === 'string' && message.port !== '' ? message.port : '未知串口'
+          const seconds =
+            typeof message.seconds === 'number' && Number.isFinite(message.seconds) ? message.seconds : null
+          setPhase('done')
+          setStartSent(false)
+          setCancelSent(false)
+          setProgress((previous) => (previous === null ? previous : { ...previous, percent: 100 }))
+          setStatus({ kind: 'done', port, seconds })
+          return
+        }
+        case 'error': {
+          const code = typeof message.code === 'string' ? message.code : 'internal'
+          const text = describeError(code, typeof message.message === 'string' ? message.message : '')
+          setStartSent(false)
+          setCancelSent(false)
+          if (code === 'cancelled') {
+            setPhase('cancelled')
+            setStatus({ kind: 'info', text })
+            return
+          }
+          setPhase('error')
+          setStatus({ kind: 'error', text })
+          return
+        }
+        default:
+          return
+      }
     },
-    [publishLogs]
+    [appendLine]
   )
 
-  const appendLine = useCallback((text: string) => appendLogText(`${text}\n`), [appendLogText])
+  /**
+   * 建一次连接。只有两种调用者：挂载时（一次）+ 用户点「重新连接」。
+   * 没有重连定时器，onclose 之后不会再自己连回去。
+   */
+  const connect = useCallback(() => {
+    const current = socketRef.current
+    if (current !== null && (current.readyState === WebSocket.CONNECTING || current.readyState === WebSocket.OPEN)) return
 
-  const clearLogs = useCallback(() => {
-    logLinesRef.current = []
-    partialLineRef.current = ''
-    setLines([])
-  }, [])
+    const url = `${location.protocol === 'https:' ? 'wss://' : 'ws://'}${location.host}${FLASH_WS_PATH}`
+    let socket: WebSocket
+    try {
+      socket = new WebSocket(url)
+    } catch (error) {
+      setConnection('closed')
+      setStatus({ kind: 'error', text: `连接烧录服务失败：${errorText(error)}` })
+      return
+    }
 
-  useEffect(() => {
-    const box = logBoxRef.current
-    if (box !== null) box.scrollTop = box.scrollHeight
-  }, [lines])
+    socketRef.current = socket
+    setConnection('connecting')
+    setStatus(null)
 
-  const terminal = useMemo<IEspLoaderTerminal>(
-    () => ({
-      clean: clearLogs,
-      writeLine: (data: string) => appendLine(data),
-      write: (data: string) => appendLogText(data)
-    }),
-    [appendLine, appendLogText, clearLogs]
-  )
+    socket.onopen = () => {
+      if (socketRef.current !== socket) return
+      setConnection('open')
+    }
+    socket.onmessage = (event: MessageEvent) => {
+      if (socketRef.current !== socket) return
+      handleServerMessage(event.data)
+    }
+    // 出错后浏览器一定会再触发 onclose，断线状态统一在 onclose 里收口。
+    socket.onerror = () => undefined
+    socket.onclose = () => {
+      if (socketRef.current !== socket) return
+      socketRef.current = null
+      setConnection('closed')
+      setStartSent(false)
+      setCancelSent(false)
+    }
+  }, [handleServerMessage])
 
+  // 挂载：读 manifest（一次）。清理时不再回写状态。
   useEffect(() => {
     let alive = true
     void (async () => {
@@ -337,235 +294,81 @@ export function FirmwareFlash() {
     }
   }, [])
 
-  const serial = getSerial()
-  const webSerialAvailable = serial !== undefined
-  const webCryptoAvailable = typeof crypto !== 'undefined' && crypto.subtle !== undefined
-  const manifestChipOk = manifest !== null && manifest.chip.toLowerCase() === SUPPORTED_CHIP
-  const canFlash =
-    webSerialAvailable &&
-    webCryptoAvailable &&
-    manifest !== null &&
-    manifestChipOk &&
-    port !== null &&
-    !flashing &&
-    !selecting
-
-  const handleSelectPort = useCallback(() => {
-    const currentSerial = getSerial()
-    if (currentSerial === undefined) {
-      setStatus({ tone: 'error', text: WEB_SERIAL_UNSUPPORTED })
-      return
+  // 挂载：连一次 WS；卸载时只关闭自己那条连接。
+  useEffect(() => {
+    connect()
+    return () => {
+      const socket = socketRef.current
+      socketRef.current = null
+      if (socket === null) return
+      socket.onopen = null
+      socket.onmessage = null
+      socket.onerror = null
+      socket.onclose = null
+      socket.close()
     }
-    if (selecting || flashing) return
-    setSelecting(true)
-    setStatus(null)
-    void (async () => {
-      try {
-        const selected = await currentSerial.requestPort({ filters: [{ usbVendorId: ESPRESSIF_VID }] })
-        const info = selected.getInfo()
-        setPort(selected)
-        setPortInfo(info)
-        setStatus({ tone: 'ok', text: '已选择串口' })
-      } catch (error) {
-        const name = error instanceof Error ? error.name : ''
-        if (name === 'NotFoundError') {
-          setStatus({ tone: 'info', text: '未选择串口（已取消）' })
-        } else if (name === 'SecurityError') {
-          setStatus({
-            tone: 'error',
-            text: '浏览器阻止了串口访问：请用 Chrome/Edge 通过 http://127.0.0.1:57648 打开，并允许本站使用串口。'
-          })
-        } else if (name === 'NotAllowedError') {
-          setStatus({ tone: 'error', text: '串口访问被拒绝：请在浏览器站点权限中允许「串口」，然后重试。' })
-        } else {
-          setStatus({ tone: 'error', text: `选择串口失败：${errorText(error)}` })
-        }
-      } finally {
-        setSelecting(false)
-      }
-    })()
-  }, [flashing, selecting])
+  }, [connect])
 
-  const handleFlash = useCallback(() => {
-    if (flashing || selecting) return
-    const currentManifest = manifest
-    const currentPort = port
-    if (currentManifest === null) {
-      setStatus({ tone: 'error', text: '内置固件不可用，无法烧录。' })
+  // 日志自动滚到底。
+  useEffect(() => {
+    const box = logBoxRef.current
+    if (box !== null) box.scrollTop = box.scrollHeight
+  }, [lines])
+
+  /** 往宿主发一条指令；连接不在时给出可见提示而不是静默失败。 */
+  const send = useCallback((payload: { type: string }): boolean => {
+    const socket = socketRef.current
+    if (socket === null || socket.readyState !== WebSocket.OPEN) {
+      setStatus({ kind: 'error', text: '烧录服务未连接，请先点「重新连接」。' })
+      return false
+    }
+    socket.send(JSON.stringify(payload))
+    return true
+  }, [])
+
+  const manifestChipOk = manifest !== null && manifest.chip.toLowerCase() === SUPPORTED_CHIP
+  const inFlight = phase === 'running' || startSent
+  const canStart = connection === 'open' && manifest !== null && manifestChipOk && !inFlight
+  const canCancel = connection === 'open' && phase === 'running' && !cancelSent
+
+  const handleStart = useCallback(() => {
+    const current = manifest
+    if (current === null) {
+      setStatus({ kind: 'error', text: '内置固件不可用，无法烧录。' })
       return
     }
     if (!manifestChipOk) {
-      setStatus({ tone: 'error', text: `固件清单芯片为「${currentManifest.chip}」，与 ESP32-C6 不匹配，已禁用烧录。` })
+      setStatus({ kind: 'error', text: `固件清单芯片为「${current.chip}」，与 ESP32-C6 不匹配，已禁用烧录。` })
       return
     }
-    if (currentPort === null) {
-      setStatus({ tone: 'error', text: '请先选择串口。' })
-      return
-    }
-    if (!webCryptoAvailable) {
-      setStatus({ tone: 'error', text: '当前环境不支持 WebCrypto SHA-256，无法校验固件。' })
+    if (inFlight) return
+
+    const confirmed = window.confirm(
+      `即将烧录固件 v${current.version}\n` +
+        `sha256：${current.sha256.slice(0, 8)}…\n` +
+        `芯片：${SUPPORTED_CHIP}\n\n` +
+        `将覆盖开发板上的固件。${NVS_CONFIRM}\n\n` +
+        '过程中请勿拔线。确定继续？'
+    )
+    if (!confirmed) {
+      setStatus({ kind: 'info', text: '已取消烧录' })
       return
     }
 
-    setFlashing(true)
     setProgress(null)
-    setStatus({ tone: 'info', text: '正在下载并校验固件…' })
-    clearLogs()
+    setLines([])
+    setCancelSent(false)
+    setStatus({ kind: 'info', text: '已发送烧录指令，等待宿主接管串口…' })
+    if (!send({ type: 'start' })) return
+    setStartSent(true)
+  }, [inFlight, manifest, manifestChipOk, send])
 
-    void (async () => {
-      let transport: EsptoolTransport | null = null
-      let holdAcquired = false
-      try {
-        appendLine(
-          `>>> 固件 v${currentManifest.version} · ${formatBytes(currentManifest.size)} · sha256 ${currentManifest.sha256.slice(0, 8)}…`
-        )
-
-        const imageResponse = await fetch('/airremote/firmware/image', { cache: 'no-store' })
-        if (!imageResponse.ok) {
-          const body = (await imageResponse.json().catch(() => null)) as { message?: unknown } | null
-          const message =
-            body !== null && typeof body.message === 'string' ? body.message : `HTTP ${imageResponse.status}`
-          throw new FlashFailure('image', `下载固件失败：${message}`)
-        }
-        const imageBuffer = await imageResponse.arrayBuffer()
-        const digest = await crypto.subtle.digest('SHA-256', imageBuffer)
-        const actualSha256 = toHex(digest)
-        appendLine(`>>> 本地校验 sha256：${actualSha256}`)
-        if (actualSha256 !== currentManifest.sha256) {
-          appendLine(`!!! 期望 sha256：${currentManifest.sha256}`)
-          throw new FlashFailure('sha', '固件文件损坏（sha256 不匹配）')
-        }
-        if (imageBuffer.byteLength !== currentManifest.size) {
-          appendLine(`!!! 清单大小 ${currentManifest.size} 字节，实际 ${imageBuffer.byteLength} 字节`)
-          throw new FlashFailure('sha', '固件文件损坏（大小不匹配）')
-        }
-        appendLine('>>> sha256 与清单一致，固件完整')
-
-        const confirmed = window.confirm(
-          `即将烧录固件 v${currentManifest.version}\n` +
-            `sha256：${currentManifest.sha256.slice(0, 8)}…\n` +
-            `芯片：${currentManifest.chip}\n\n` +
-            '将覆盖开发板上的固件。烧录会清除开发板上的 Wi-Fi 配网与时区设置，烧录后需重新配网并再次同步时间。\n\n' +
-            '过程中请勿拔线。确定继续？'
-        )
-        if (!confirmed) {
-          setStatus({ tone: 'info', text: '已取消烧录' })
-          return
-        }
-
-        setStatus({ tone: 'info', text: '正在占用串口…' })
-        const hold = await setSerialHolder('flash')
-        if (hold.ok !== true) {
-          throw new FlashFailure('busy', hold.message ?? '串口正被其它操作占用')
-        }
-        holdAcquired = true
-        appendLine('>>> 已获得串口占用权（holder=flash）')
-
-        const { ESPLoader, Transport } = await loadEsptool()
-        transport = new Transport(currentPort, true)
-        const loader = new ESPLoader({
-          transport,
-          baudrate: FLASH_BAUDRATE,
-          terminal
-        })
-
-        setStatus({ tone: 'info', text: '正在连接开发板…' })
-        const chip = await loader.main()
-        appendLine(`>>> 检测到芯片：${chip}`)
-        if (!isEsp32C6(chip)) {
-          throw new FlashFailure('chip', `检测到芯片「${chip}」，不是 ESP32-C6 系列，已中止烧录。`)
-        }
-
-        setStatus({
-          tone: 'info',
-          text: eraseAll ? '正在整片擦除并写入固件（整片擦除较慢，请勿断电）…' : '正在写入固件…'
-        })
-        await loader.writeFlash({
-          // 0.7.1: data is Uint8Array, not a binary string.
-          fileArray: [{ data: new Uint8Array(imageBuffer), address: 0x0 }],
-          flashSize: 'keep',
-          flashMode: 'keep',
-          flashFreq: 'keep',
-          eraseAll,
-          compress: true,
-          reportProgress: (_fileIndex: number, written: number, total: number) => {
-            const percent = total > 0 ? Math.min(100, Math.round((written / total) * 100)) : 0
-            setProgress({ phase: '写入中', percent, written, total })
-          }
-        })
-        appendLine('>>> 固件写入完成')
-
-        try {
-          await loader.after('hard_reset')
-          appendLine('>>> 已发送硬复位命令')
-        } catch (resetError) {
-          appendLine(`!!! 硬复位失败：${errorText(resetError)}`)
-        }
-
-        setProgress({
-          phase: '完成',
-          percent: 100,
-          written: imageBuffer.byteLength,
-          total: imageBuffer.byteLength
-        })
-        setStatus({
-          tone: 'ok',
-          text: `烧录完成 · 固件 v${currentManifest.version}；请重新配网并再次同步时间。`
-        })
-      } catch (error) {
-        const failure = describeFailure(error)
-        appendLine(`!!! ${failure.text}`)
-        setStatus({ tone: 'error', text: failure.text, retry: true })
-        setProgress(null)
-        if (failure.reselect) {
-          setPort(null)
-          setPortInfo(null)
-        }
-      } finally {
-        // Always close the browser-side port first, then hand the host back its
-        // serial holder. Both steps run even when the user aborts or esptool
-        // throws, so a failed flash never leaves the board locked.
-        if (transport !== null) {
-          await disconnectTransport(transport, appendLine)
-        }
-        if (holdAcquired) {
-          try {
-            const released = await setSerialHolder('none')
-            if (released.ok === true) {
-              appendLine('>>> 已释放串口占用（holder=none）')
-            } else {
-              appendLine(`!!! 释放串口占用失败：${released.message ?? released.error ?? '未知错误'}`)
-            }
-          } catch (error) {
-            appendLine(`!!! 释放串口占用失败：${errorText(error)}`)
-          }
-        }
-        setFlashing(false)
-      }
-    })()
-  }, [
-    appendLine,
-    clearLogs,
-    eraseAll,
-    flashing,
-    manifest,
-    manifestChipOk,
-    port,
-    selecting,
-    terminal,
-    webCryptoAvailable
-  ])
-
-  const handleRetry = useCallback(() => {
-    if (flashing || selecting) return
-    setStatus(null)
-    setProgress(null)
-    if (port === null) {
-      handleSelectPort()
-      return
-    }
-    handleFlash()
-  }, [flashing, handleFlash, handleSelectPort, port, selecting])
+  const handleCancel = useCallback(() => {
+    if (!canCancel) return
+    if (!send({ type: 'cancel' })) return
+    setCancelSent(true)
+    setStatus({ kind: 'info', text: '已发送取消请求，等待宿主结束烧录…' })
+  }, [canCancel, send])
 
   const controlStyle = {
     fontSize: '12px',
@@ -578,6 +381,11 @@ export function FirmwareFlash() {
 
   const mutedStyle = { fontSize: '12px', opacity: 0.6 } as const
   const sha256Short = manifest === null ? '' : manifest.sha256.slice(0, 8)
+  const showRetry =
+    connection === 'open' &&
+    !inFlight &&
+    manifest !== null &&
+    (phase === 'error' || phase === 'cancelled' || (status !== null && status.kind === 'error'))
 
   return (
     <section style={{ display: 'flex', flexDirection: 'column', gap: '10px', padding: '4px 2px' }}>
@@ -621,10 +429,14 @@ export function FirmwareFlash() {
 
       <div style={{ fontSize: '11px', opacity: 0.6, lineHeight: 1.55 }}>{NVS_WARNING}</div>
 
-      {!webSerialAvailable ? (
+      {connection === 'closed' ? (
         <div
           role="status"
           style={{
+            display: 'flex',
+            gap: '8px',
+            alignItems: 'center',
+            flexWrap: 'wrap',
             fontSize: '12px',
             lineHeight: 1.55,
             padding: '6px 8px',
@@ -633,73 +445,44 @@ export function FirmwareFlash() {
             color: '#e5534b'
           }}
         >
-          {WEB_SERIAL_UNSUPPORTED}
+          <span>已断开，点「重新连接」</span>
+          <button
+            type="button"
+            onClick={connect}
+            style={{ ...controlStyle, padding: '2px 8px', cursor: 'pointer', color: 'inherit' }}
+          >
+            重新连接
+          </button>
         </div>
-      ) : null}
-
-      {!webCryptoAvailable && webSerialAvailable ? (
-        <div style={{ fontSize: '12px', color: '#e5534b' }}>
-          当前环境不支持 WebCrypto SHA-256，无法校验固件，已禁用烧录。
-        </div>
+      ) : connection === 'connecting' ? (
+        <div style={mutedStyle}>正在连接烧录服务…</div>
       ) : null}
 
       <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
         <button
           type="button"
-          disabled={!webSerialAvailable || flashing || selecting}
-          onClick={handleSelectPort}
-          style={{
-            ...controlStyle,
-            cursor: !webSerialAvailable || flashing || selecting ? 'default' : 'pointer',
-            opacity: !webSerialAvailable || flashing || selecting ? 0.6 : 1
-          }}
+          disabled={!canStart}
+          onClick={handleStart}
+          style={{ ...controlStyle, cursor: canStart ? 'pointer' : 'default', opacity: canStart ? 1 : 0.6 }}
         >
-          {selecting ? '选择中…' : '选择串口'}
+          {inFlight ? '烧录中…' : '开始烧录'}
         </button>
         <button
           type="button"
-          disabled={!canFlash}
-          onClick={handleFlash}
-          style={{ ...controlStyle, cursor: canFlash ? 'pointer' : 'default', opacity: canFlash ? 1 : 0.6 }}
+          disabled={!canCancel}
+          onClick={handleCancel}
+          style={{ ...controlStyle, cursor: canCancel ? 'pointer' : 'default', opacity: canCancel ? 1 : 0.6 }}
         >
-          {flashing ? '烧录中…' : '烧录'}
+          {cancelSent ? '取消中…' : '取消'}
         </button>
-        {portInfo === null ? null : (
-          <span style={{ fontSize: '12px', opacity: 0.7 }}>
-            串口 VID {formatUsbId(portInfo.usbVendorId)} · PID {formatUsbId(portInfo.usbProductId)}
-          </span>
-        )}
+        <span style={{ fontSize: '11px', opacity: 0.55 }}>由宿主通过 USB 串口烧录，浏览器不接触串口</span>
       </div>
-
-      <label
-        style={{
-          display: 'flex',
-          gap: '6px',
-          alignItems: 'flex-start',
-          fontSize: '12px',
-          opacity: flashing ? 0.6 : 1
-        }}
-      >
-        <input
-          type="checkbox"
-          checked={eraseAll}
-          disabled={flashing}
-          onChange={(event) => setEraseAll(event.target.checked)}
-          style={{ marginTop: '2px' }}
-        />
-        <span>擦除整片（会清空开发板上的 NVS、配网与校准数据）</span>
-      </label>
-      {eraseAll ? (
-        <div style={{ fontSize: '11px', color: '#e5534b', lineHeight: 1.5 }}>
-          ⚠️ 已启用整片擦除：开发板上的 Wi-Fi 配网、时区设置和校准数据都会被清除，且无法恢复。
-        </div>
-      ) : null}
 
       {progress === null ? null : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
           <div style={{ display: 'flex', gap: '8px', alignItems: 'center', fontSize: '12px' }}>
             <span>
-              {progress.phase} · {progress.percent}%
+              {phase === 'running' ? '写入中' : '写入'} · {progress.percent}%
             </span>
             <span style={{ opacity: 0.6 }}>
               {formatBytes(progress.written)} / {formatBytes(progress.total)}
@@ -734,17 +517,19 @@ export function FirmwareFlash() {
             alignItems: 'center',
             flexWrap: 'wrap',
             fontSize: '12px',
-            opacity: status.tone === 'info' ? 0.7 : 0.95,
-            color: status.tone === 'error' ? '#e5534b' : 'inherit'
+            opacity: status.kind === 'info' ? 0.7 : 0.95,
+            color: status.kind === 'error' ? '#e5534b' : 'inherit'
           }}
         >
-          <span>{status.text}</span>
-          {status.retry === true && !flashing ? (
-            <button
-              type="button"
-              onClick={handleRetry}
-              style={{ ...controlStyle, padding: '2px 8px', cursor: 'pointer' }}
-            >
+          <span>
+            {status.kind === 'done'
+              ? `烧录完成 · 固件 v${manifest === null ? '?' : manifest.version} · ${status.port} · ${formatSeconds(
+                  status.seconds
+                )}；请重新配网并再次同步时间。`
+              : status.text}
+          </span>
+          {showRetry ? (
+            <button type="button" onClick={handleStart} style={{ ...controlStyle, padding: '2px 8px', cursor: 'pointer' }}>
               重试
             </button>
           ) : null}
