@@ -125,9 +125,9 @@ UTC+1 柏林 / UTC+8 北京 / UTC+9 东京）加一个「同步到开发板」�
 设置页 → **固件烧录**（`settings.section`，id `airremote-firmware`）：把插件包里内置的合并镜像
 通过浏览器 **Web Serial** 写进开发板。host 不碰串口，只按静态文件把镜像流式下发。
 
-- 面板先读 `GET /airremote/firmware/manifest`，显示内置固件：版本 `v0.3.0`、构建时间 `builtAt`
-  （`2026-11-11T06:17:12.844Z`）、大小 `size`（`4,526,032` 字节 ≈ 4.32 MB）、`sha256` 前 8 位
-  （悬停可见完整值）、芯片 `esp32c6`。
+- 面板先读 `GET /airremote/firmware/manifest`，显示内置固件：版本 `v0.4.0`、构建时间 `builtAt`
+  （`2026-11-11T07:44:00.992Z`）、大小 `size`（`4,576,896` 字节 ≈ 4.36 MB）、`sha256` 前 8 位
+  （`52924131`，悬停可见完整值）、芯片 `esp32c6`。
 - 「选择串口」调 `navigator.serial.requestPort({ filters: [{ usbVendorId: 0x303a }] })`，只列
   Espressif（VID `303A`）设备；选中后显示 VID / PID。
 - 「烧录」是一次显式点击，流程是：
@@ -172,11 +172,11 @@ UTC+1 柏林 / UTC+8 北京 / UTC+9 东京）加一个「同步到开发板」�
 ```powershell
 idf -C firmware build
 cd plugins/dsh-airremote
-node scripts/bundle-firmware.mjs      # 可用 --version 0.3.0 覆盖版本号
+node scripts/bundle-firmware.mjs --version 0.4.0   # 必须显式给版本号，否则 manifest 写脚本内置的旧默认值
 ```
 
 脚本做的事：跑 `idf -C firmware merge-bin`（失败回落到 `python -m esptool merge_bin`），把
-`firmware/build/merged-binary.bin`（`4,526,032` 字节）拷成
+`firmware/build/merged-binary.bin`（`4,576,896` 字节）拷成
 `plugins/dsh-airremote/firmware/codex_air_remote-merged.bin`，再写 `manifest.json`
 （`size` / `sha256` / `builtAt` / `version` / `commit` / `chip` / `flashOffset`）。
 合并偏移以 `firmware/build/flash_args` 为准：`0x0` bootloader、`0x8000` partition-table、
