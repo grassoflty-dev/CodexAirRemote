@@ -56,6 +56,7 @@ export class BoardSession {
   private readonly simulation: SimulationTarget | undefined
   private ended = false
   private captureComplete = false
+  private terminalSent = false
   private pullOutstanding = false
   private sequenceSeen = 0
   private stopRequested: { draft: boolean } | undefined
@@ -227,8 +228,12 @@ export class BoardSession {
     }
     if (text === CANCEL) {
       this.captureComplete = true
+      this.stopRequested = { draft: false }
       this.setState('finishing', '板子已取消')
-      this.ws?.sendText(CANCELLED)
+      if (!this.terminalSent) {
+        this.terminalSent = true
+        this.ws?.sendText(CANCELLED)
+      }
       this.ackTimer = this.timeout(ACK_TIMEOUT_MS, () => this.finish('cancelled', '已取消'))
       return
     }
@@ -238,7 +243,6 @@ export class BoardSession {
       this.finish(this.stopRequested?.draft === false ? 'cancelled' : 'draft', '会话结束')
       return
     }
-    /* Unknown text from a future firmware: ignore rather than tearing the socket down. */
   }
 
   private schedulePull(delayMs: number): void {
@@ -274,7 +278,10 @@ export class BoardSession {
       return
     }
     if (this.captureComplete) {
-      this.ws.sendText(options.draft ? DRAFTED : CANCELLED)
+      if (!this.terminalSent) {
+        this.terminalSent = true
+        this.ws.sendText(options.draft ? DRAFTED : CANCELLED)
+      }
     } else {
       this.ws.sendText(ABORT)
     }
