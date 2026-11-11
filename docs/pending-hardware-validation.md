@@ -251,3 +251,20 @@ I (xxx) ble_mouse: BLE advertising started
 | 待机页 | ✅ 已通过（大时钟完整、60 s、80% 背光、触摸唤醒）；待机阈值/亮度参数仍按远端 60 s/80% |
 | 插件烧录 / 时区设置 | 插件侧 esptool-js 烧录与「开发板时间」需真机回归；**插件内置固件镜像 v0.4.0 早于本轮陀螺仪/语音修复**，发布前需 `node plugins/dsh-airremote/scripts/bundle-firmware.mjs` 重打包 |
 | BLE 0x13 重连循环 | 启动日志曾见主机侧每秒断开重连；本轮陀螺仪测试未复现。若再现，先删除 Windows 蓝牙设备重新配对 |
+
+
+## 13. 语音会话 AR1V 验证（2026-11-11，部分通过）
+
+| 项目 | 结果 |
+| --- | --- |
+| BLE 释放 → PCM 分配顺序 | ✅ 通过：日志 `busy: hold +voice` → `voice: BT released, heap free 77860` → `audio_open` 成功（原先先分配 PCM 时会失败）。BLE 释放是异步的，首次 malloc 仍可能失败，`audio_open()` 现重试 4 次（100 ms 间隔）并打印 `free/largest`。 |
+| 失败回滚 | ✅ 通过：无 AP/DHCP 时两轮等待后 `Wi-Fi unavailable` → `radio_down` → `Voice session ended (7)` → `busy: hold -voice, mask 0x0`；BLE 恢复（`BLE advertising started` / `host connected`）。 |
+| 进入 AUTH/READY2 | ⏳ **未达成**：板端 Wi-Fi 关联失败 `reason 210 = NO_AP_FOUND_W_COMPATIBLE_SECURITY`（热点 `AirRemote-2B04F2` 在 Windows 侧为 On，但板端扫不到兼容安全模式的 AP），且 companion（TLS/WSS 47683）当前未运行。 |
+
+### 复现 AUTH 的前置条件（需用户/lead 决策）
+
+1. 把板子配到**可用的 2.4 GHz AP**：`AR1W <ssid_hex> <pass_hex>`（空密码用 `-`），再 `AR1V`；
+   或让 Windows 热点以兼容安全模式（WPA2-PSK）广播并确认手机等设备可见；
+2. 启动 companion（legacy，但可用于测试）：`windows\Companion.cmd`；
+   注意它会管理热点，**启动前需用户确认不动现有热点**；
+3. 满足后 `AR1V` 应看到 `esp_wifi_connect ... IP` → `discovery` → TLS 握手 → `AUTH`/`READY2` 日志。

@@ -183,3 +183,20 @@ climbing when the user stopped), `rdy=1` once connected, `drop=0`,
 Field diagnostics (200 ms `diag …` snapshot + `loop stalled` warning) are now
 compiled out by default: set `AIR_MOUSE_DIAGNOSTICS=1` in `air_mouse.c` when
 chasing a motion/report regression.
+
+
+## 11. Voice session bring-up (2026-11-11)
+
+`voice.c` now releases BLE **before** the 16 KiB PCM ring allocation (the old
+order could not get a contiguous block once Bluedroid was up) and retries the
+allocation 4x with 100 ms gaps because Bluedroid releases its blocks
+asynchronously. Failure paths keep BLE resume + busy release exactly once.
+
+Verified on hardware: `BT released, heap free 77860` -> audio ring OK ->
+Wi-Fi start; with no reachable AP the session ends cleanly
+(`Wi-Fi unavailable` -> `Voice session ended (7)` -> `busy: hold -voice` and BLE
+advertising resumes). Reaching AUTH/READY2 still needs a reachable AP and the
+host companion running.
+
+The plugin's bundled firmware image is now **v0.4.1** (commit `858ba89`,
+merged 4,577,280 B, sha256 `2a8c1f76...`), carrying the standby/gyro/voice fixes.
