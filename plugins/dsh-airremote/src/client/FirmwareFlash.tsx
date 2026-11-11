@@ -12,12 +12,16 @@ import { useCallback, useEffect, useRef, useState } from 'react'
  * 固定协议：
  *   浏览器 → 宿主：{type:'start'} / {type:'cancel'}
  *   宿主 → 浏览器：
- *     {type:'state', phase:'idle'|'busy'|'running'|'done'|'error'|'cancelled'}
- *     {type:'busy', message}
+ *     {type:'state', phase:'idle'|'running'|'done'|'error'|'cancelled'}
  *     {type:'log', line}
  *     {type:'progress', percent, written, total}
  *     {type:'done', port, seconds}
  *     {type:'error', code, message}
+ *     {type:'ping', at}
+ *
+ * 多连接语义：宿主允许同时挂多条 WS，设置页这条只是「观察者 + 可操作者」。
+ * 已有烧录在跑时再发 start 会收到 `{type:'error', code:'busy'}`，但**连接不再断开**，
+ * 所以它按普通错误显示、并保持可重试；`ping` 等未知 / 心跳消息一律静默忽略。
  *
  * 挂载只做两件事：GET `/airremote/firmware/manifest`、建立**一次** WS。不自动烧录、
  * 不轮询、不监听插拔；断线后只有用户点「重新连接」才会重连。
@@ -29,6 +33,12 @@ const FLASH_WS_PATH = '/airremote/flash'
 const NVS_WARNING =
   '合并固件从 0x0 整体写入，会覆盖 nvs 分区：烧录会清除开发板上的 Wi-Fi 配网与时区设置，烧录后需重新配网并再次同步时间。'
 const NVS_CONFIRM = '烧录会清除开发板上的 Wi-Fi 配网与时区设置，烧录后需重新配网并再次同步时间。'
+/** 取消烧录的二次确认：中途中断会留下写了一半的固件，板子起不来。 */
+const CANCEL_CONFIRM = '中断烧录会清空 flash，开发板将无法启动，必须重新烧录才能恢复。确定中断？'
+/** 取消后的状态文案：强调板子当前不可启动，引导用户立刻重烧。 */
+const CANCELLED_TEXT = '烧录已中断，开发板处于不可启动状态，请重新烧录'
+/** 取消按钮旁边的小字，提前告知后果。 */
+const CANCEL_HINT = '中断烧录会让开发板无法启动，需重新烧录才能恢复'
 
 interface FirmwareManifest {
   version: string
@@ -162,10 +172,12 @@ export function FirmwareFlash() {
           setPhase(next)
           setStartSent(false)
           setCancelSent(false)
-          if (next === 'cancelled') setStatus({ kind: 'info', text: '已取消' })
+          if (next === 'cancelled') setStatus({ kind: 'error', text: CANCELLED_TEXT })
           return
         }
         case 'busy': {
+          // 旧版宿主「连接建立就 busy 然后断开」的通知；新宿主改为 error+busy 且不断开。
+          // 保留处理只为兼容旧宿主，不产生额外副作用。
           setPhase('busy')
           setStartSent(false)
           const detail = typeof message.message === 'string' ? message.message.trim() : ''
@@ -200,19 +212,30 @@ export function FirmwareFlash() {
         }
         case 'error': {
           const code = typeof message.code === 'string' ? message.code : 'internal'
-          const text = describeError(code, typeof message.message === 'string' ? message.message : '')
+          const hostMessage = typeof message.message === 'string' ? message.message.trim() : ''
+          // code=busy 现在会在**连接仍然存在**时返回（另一个连接正在烧录）。
+          // 宿主给的原话（「已有一次烧录在进行，请等它结束」）比通用文案更准确，
+          // 但仍按普通错误显示，`showRetry` 会给出「重试」。
+          const text = code === 'busy' && hostMessage !== '' ? hostMessage : describeError(code, hostMessage)
           setStartSent(false)
           setCancelSent(false)
           if (code === 'cancelled') {
+            // 中断后板子写了一半、起不来：状态是 error（不是「已取消」的普通提示），
+            // 但 phase 保持 cancelled → inFlight=false → 「烧录」按钮立刻可用，能马上重烧恢复。
             setPhase('cancelled')
-            setStatus({ kind: 'info', text })
+            setStatus({ kind: 'error', text: CANCELLED_TEXT })
             return
           }
           setPhase('error')
           setStatus({ kind: 'error', text })
           return
         }
+        case 'ping': {
+          // 宿主 15s 心跳：只保活，不参与 UI 状态。
+          return
+        }
         default:
+          // 未知 type（未来协议扩展 / 旧宿主字段）静默忽略，绝不改变状态或报错。
           return
       }
     },
@@ -365,9 +388,11 @@ export function FirmwareFlash() {
 
   const handleCancel = useCallback(() => {
     if (!canCancel) return
+    // 二次确认：中断烧录 = 板子上是写了一半的固件，起不来。用户取消就什么都不发。
+    if (!window.confirm(CANCEL_CONFIRM)) return
     if (!send({ type: 'cancel' })) return
     setCancelSent(true)
-    setStatus({ kind: 'info', text: '已发送取消请求，等待宿主结束烧录…' })
+    setStatus({ kind: 'info', text: '已发送中断请求，等待宿主结束烧录…' })
   }, [canCancel, send])
 
   const controlStyle = {
@@ -475,6 +500,7 @@ export function FirmwareFlash() {
         >
           {cancelSent ? '取消中…' : '取消'}
         </button>
+        <span style={{ fontSize: '11px', opacity: 0.6, color: '#e5534b' }}>{CANCEL_HINT}</span>
         <span style={{ fontSize: '11px', opacity: 0.55 }}>由宿主通过 USB 串口烧录，浏览器不接触串口</span>
       </div>
 

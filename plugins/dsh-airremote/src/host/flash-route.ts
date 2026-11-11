@@ -3,22 +3,33 @@
  *
  * 协议（客户端按这个写，改之前先对齐）：
  *
- *   连接建立 →
- *     服务端立刻发 `{"type":"state","phase":"idle"|"busy"}`
- *     已有烧录在跑 → 再发 `{"type":"busy","message":"..."}` 然后 `close(1008)`
+ *   连接建立（可以同时有多条）→
+ *     服务端立刻发 `{"type":"state","phase":"idle"|"running"}`
+ *     （`running` = 已有烧录任务在跑，这条连接只是观察者）
  *
  *   客户端 → 服务端：`{"type":"start"}`、`{"type":"cancel"}`（也接受 `{"type":"ping"}`）
  *
- *   服务端 → 客户端：
- *     `{"type":"state","phase":"running"|"done"|"error"|"cancelled"|"idle"}`
+ *   服务端 → 所有连接（广播）：
+ *     `{"type":"state","phase":"running"|"done"|"error"|"cancelled"}`
  *     `{"type":"log","line":"<esptool 原始行>"}`
  *     `{"type":"progress","percent":0-100,"written":N,"total":N}`
  *     `{"type":"done","port":"COM7","seconds":12.3}`
  *     `{"type":"error","code":"<错误码>","message":"<中文>"}`
+ *     `{"type":"ping","at":<epoch ms>}`（每 15s，仅保活）
  *
- * 与 `audio-route.ts` 一致：单活动会话、同源检查（`originAllowed`）、15s 心跳 +
- * 45s 静默断开。**页面关闭 / 刷新导致 WS 断开时必须取消烧录并释放串口**，
- * 否则 Windows 的独占句柄会把口占到拔插为止。
+ * 多连接语义（为什么不再「单会话 + busy 断开」）：
+ *  - 设置页一挂载就连 WS 并一直留着，如果把「已有连接」当忙碌，任何外部/脚本连接
+ *    都会恒回 busy，且服务端 45s 空闲 close(1001,'idle') 会让页面显示「已断开」。
+ *  - 因此允许多条连接并存，每条都能连/断、都能观察状态、都能发 `cancel`。
+ *  - 只有**烧录任务**独占：已有任务在跑时再收到 `start`，只回
+ *    `{"type":"error","code":"busy","message":"已有一次烧录在进行，请等它结束"}`，**不关闭连接**。
+ *  - `log`/`progress`/`state`/`done`/`error` 广播给所有连接，中途连上来的也能看进度。
+ *  - 心跳每 15s 发一条 `ping` 只为保持链路活跃，**不因客户端空闲而断开**；
+ *    连接自己断了由 socket 的 close 事件自然移除。
+ *
+ * 与 `audio-route.ts` 一致：同源检查（`originAllowed`）。
+ * **任务结束 / 取消 / 失败后串口与 `SerialHolder` 的释放顺序仍由 `flash-service.ts`
+ * 的 finally 保证**，这里只在任务收尾时把任务槽清空并放锁。
  */
 
 import type { IncomingMessage } from 'node:http'
@@ -28,8 +39,7 @@ import { findBoardPort } from './serial-port.js'
 import type { SerialHolder } from './serial-holder.js'
 import { acceptWebSocket, type WsConnection } from './ws.js'
 
-/** 多久没有收发就认定死连接（心跳间隔 15s，容忍两次丢包）。 */
-const IDLE_TIMEOUT_MS = 45_000
+/** 心跳间隔：只发 `ping` 保活，不据此判定 / 断开空闲连接。 */
 const HEARTBEAT_INTERVAL_MS = 15_000
 
 export interface FlashRouteOptions {
@@ -45,18 +55,24 @@ export interface FlashRouteOptions {
   flash?: typeof flashFirmware
 }
 
-interface ActiveSession {
+/** 一条浏览器连接。`connection` 在 `acceptWebSocket` 返回后才赋值，消息回调里只读。 */
+interface ClientConnection {
   connection: WsConnection
-  lastSeen: number
-  heartbeat: NodeJS.Timeout
-  running: boolean
-  controller?: AbortController
+}
+
+/** 正在跑的烧录任务。存在即表示「串口被烧录独占」。 */
+interface FlashTask {
+  controller: AbortController
 }
 
 type ClientMessage = { type?: unknown; [key: string]: unknown }
 
 export class FlashRoute {
-  private active: ActiveSession | undefined
+  /** 所有活着的连接；连/断都只动这个集合。 */
+  private readonly clients = new Set<WsConnection>()
+  /** 当前烧录任务；`undefined` = 空闲。只有它会产生「忙碌」。 */
+  private task: FlashTask | undefined
+  private heartbeat: NodeJS.Timeout | undefined
   private disposed = false
   private readonly options: FlashRouteOptions
 
@@ -75,23 +91,10 @@ export class FlashRoute {
       socket.destroy()
       return
     }
-    if (this.active !== undefined) {
-      const rejected = acceptWebSocket(req, socket, head, {})
-      this.sendJson(rejected, { type: 'state', phase: 'busy' })
-      this.sendJson(rejected, { type: 'busy', message: '已有一次烧录在进行，请等它结束' })
-      rejected.close(1008, 'busy')
-      return
-    }
 
-    const active: ActiveSession = {
-      connection: undefined as unknown as WsConnection,
-      lastSeen: Date.now(),
-      heartbeat: setInterval(() => undefined, HEARTBEAT_INTERVAL_MS),
-      running: false
-    }
+    const client: ClientConnection = { connection: undefined as unknown as WsConnection }
     const connection = acceptWebSocket(req, socket, head, {
       onMessage: (message) => {
-        active.lastSeen = Date.now()
         if (message.type === 'binary') return
         let parsed: ClientMessage
         try {
@@ -100,35 +103,29 @@ export class FlashRoute {
           return
         }
         if (parsed.type === 'start') {
-          this.start(active)
+          this.start(client)
         } else if (parsed.type === 'cancel') {
-          this.cancel(active, '客户端请求取消')
+          this.cancel(client, '客户端请求取消')
         } else if (parsed.type === 'ping') {
-          this.sendJson(connection, { type: 'pong', at: Date.now() })
+          this.sendJson(client.connection, { type: 'pong', at: Date.now() })
         }
       },
       onClose: () => {
-        // 页面关闭 / 刷新：烧录必须停，串口必须放（硬要求）。
-        if (this.active !== active) return
-        if (active.running) {
-          this.options.warn?.('airremote: 烧录期间连接断开，取消烧录并释放串口')
-          active.controller?.abort()
-        }
-        this.active = undefined
-        clearInterval(active.heartbeat)
+        // 单条连接断开只是「少了一个观察者」：不取消别人的烧录，连接自然移除。
+        if (client.connection !== undefined) this.clients.delete(client.connection)
+        if (this.clients.size === 0) this.stopHeartbeat()
       },
       onError: (error) => {
         this.options.warn?.(`airremote: flash socket error: ${error.message}`)
       }
     })
 
-    active.connection = connection
-    clearInterval(active.heartbeat)
-    active.heartbeat = setInterval(() => this.heartbeat(active), HEARTBEAT_INTERVAL_MS)
-    active.heartbeat.unref?.()
-    this.active = active
+    client.connection = connection
+    this.clients.add(connection)
+    this.ensureHeartbeat()
 
-    this.sendJson(connection, { type: 'state', phase: 'idle' })
+    // 新连接先拿当前状态：空闲就是 idle；有任务在跑则告诉它 running，后续事件继续广播。
+    this.sendJson(connection, { type: 'state', phase: this.task === undefined ? 'idle' : 'running' })
   }
 
   /**
@@ -147,35 +144,53 @@ export class FlashRoute {
     }
   }
 
-  /** 心跳：太久没有收发就断开，避免死连接一直占着会话。 */
-  private heartbeat(active: ActiveSession): void {
-    if (this.active !== active) {
-      clearInterval(active.heartbeat)
-      return
-    }
-    if (Date.now() - active.lastSeen > IDLE_TIMEOUT_MS) {
-      active.connection.close(1001, 'idle')
-      return
-    }
-    this.sendJson(active.connection, { type: 'ping', at: Date.now() })
+  /** 只在有连接时开一个 interval；只发 ping，不因空闲关闭。 */
+  private ensureHeartbeat(): void {
+    if (this.heartbeat !== undefined) return
+    this.heartbeat = setInterval(() => this.heartbeatTick(), HEARTBEAT_INTERVAL_MS)
+    this.heartbeat.unref?.()
   }
 
-  private start(active: ActiveSession): void {
-    if (active.running) return
+  private stopHeartbeat(): void {
+    if (this.heartbeat === undefined) return
+    clearInterval(this.heartbeat)
+    this.heartbeat = undefined
+  }
+
+  private heartbeatTick(): void {
+    if (this.disposed || this.clients.size === 0) {
+      this.stopHeartbeat()
+      return
+    }
+    this.broadcast({ type: 'ping', at: Date.now() })
+  }
+
+  /** 发起一次烧录；已有任务时只回 busy 错误，连接保持。 */
+  private start(client: ClientConnection): void {
     if (this.disposed) return
+
+    if (this.task !== undefined) {
+      this.sendJson(client.connection, {
+        type: 'error',
+        code: 'busy',
+        message: '已有一次烧录在进行，请等它结束'
+      })
+      return
+    }
 
     const holder = this.options.holder
     if (holder !== undefined && !holder.acquire('flash')) {
-      this.sendJson(active.connection, { type: 'state', phase: 'error' })
-      this.sendJson(active.connection, { type: 'error', code: 'busy', message: '串口正被其它操作占用，请稍后再试' })
+      this.sendJson(client.connection, { type: 'state', phase: 'error' })
+      this.sendJson(client.connection, { type: 'error', code: 'busy', message: '串口正被其它操作占用，请稍后再试' })
       return
     }
     const lockHeld = holder !== undefined
 
     const controller = new AbortController()
-    active.running = true
-    active.controller = controller
-    this.sendJson(active.connection, { type: 'state', phase: 'running' })
+    const task: FlashTask = { controller }
+    this.task = task
+    // 广播 running：所有连接（包括这条请求的连接）都进入「烧录中」。
+    this.broadcast({ type: 'state', phase: 'running' })
 
     const flash = this.options.flash ?? flashFirmware
     void (async () => {
@@ -184,40 +199,41 @@ export class FlashRoute {
           firmwareDir: this.options.firmwareDir,
           port: await this.resolvePort(),
           signal: controller.signal,
-          onLine: (line) => this.sendJson(active.connection, { type: 'log', line }),
+          onLine: (line) => this.broadcast({ type: 'log', line }),
           onProgress: (percent, written, total) =>
-            this.sendJson(active.connection, { type: 'progress', percent, written, total }),
+            this.broadcast({ type: 'progress', percent, written, total }),
           onWarn: (message) => this.options.warn?.(message)
         })
-        this.sendJson(active.connection, { type: 'state', phase: 'done' })
-        this.sendJson(active.connection, { type: 'done', port: result.port, seconds: result.seconds })
+        this.broadcast({ type: 'state', phase: 'done' })
+        this.broadcast({ type: 'done', port: result.port, seconds: result.seconds })
         this.options.logger?.(`airremote: 固件已烧录到 ${result.port}（${String(result.seconds)}s）`)
       } catch (error) {
         const code = error instanceof FlashError ? error.code : 'internal'
         const message = error instanceof Error ? error.message : String(error)
         if (code === 'cancelled') {
-          this.sendJson(active.connection, { type: 'state', phase: 'cancelled' })
+          this.broadcast({ type: 'state', phase: 'cancelled' })
           this.options.logger?.(`airremote: 烧录已取消：${message}`)
         } else {
-          this.sendJson(active.connection, { type: 'state', phase: 'error' })
+          this.broadcast({ type: 'state', phase: 'error' })
           this.options.warn?.(`airremote: 烧录失败（${code}）：${message}`)
         }
-        this.sendJson(active.connection, { type: 'error', code, message })
+        this.broadcast({ type: 'error', code, message })
       } finally {
-        active.running = false
-        active.controller = undefined
+        if (this.task === task) this.task = undefined
         if (lockHeld) holder?.release('flash')
       }
     })()
   }
 
-  private cancel(active: ActiveSession, reason: string): void {
-    if (!active.running) {
-      this.sendJson(active.connection, { type: 'state', phase: 'idle' })
+  /** 任意连接都可以取消；没有任务时只把「空闲」回给发起者。 */
+  private cancel(client: ClientConnection, reason: string): void {
+    const task = this.task
+    if (task === undefined) {
+      this.sendJson(client.connection, { type: 'state', phase: 'idle' })
       return
     }
     this.options.logger?.(`airremote: ${reason}`)
-    active.controller?.abort()
+    task.controller.abort()
   }
 
   /**
@@ -233,6 +249,17 @@ export class FlashRoute {
     return found.trim()
   }
 
+  /** 广播给所有连接；顺手清掉已经关掉的。 */
+  private broadcast(value: unknown): void {
+    for (const connection of this.clients) {
+      if (!connection.open) {
+        this.clients.delete(connection)
+        continue
+      }
+      this.sendJson(connection, value)
+    }
+  }
+
   private sendJson(connection: WsConnection | undefined, value: unknown): void {
     try {
       connection?.sendText(JSON.stringify(value))
@@ -243,11 +270,16 @@ export class FlashRoute {
 
   dispose(): void {
     this.disposed = true
-    const active = this.active
-    this.active = undefined
-    if (active === undefined) return
-    clearInterval(active.heartbeat)
-    active.controller?.abort()
-    active.connection.close(1001, 'plugin disposed')
+    this.stopHeartbeat()
+    this.task?.controller.abort()
+    const connections = [...this.clients]
+    this.clients.clear()
+    for (const connection of connections) {
+      try {
+        connection.close(1001, 'plugin disposed')
+      } catch {
+        /* 对端可能已经走了 */
+      }
+    }
   }
 }
