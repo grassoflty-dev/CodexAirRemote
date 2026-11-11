@@ -20,10 +20,11 @@ enum { SAMPLE_MS = 4, CALIBRATION_SAMPLES = 150 };
 static const float GRAVITY = 9.80665f;
 static const float START_RATE = 1.5f, STOP_RATE = 1.0f;
 static const float LINEAR_GAIN = 11.0f, QUADRATIC_GAIN = 0.17f;
-static const float HORIZONTAL_SIGN = -1.0f, VERTICAL_SIGN = 1.0f;
+/* screen_normal is +Z into the back of the board, so "up" is -Z and the
+ * two signs must stay in sync: flipping only one inverts the cursor. */
+static const float HORIZONTAL_SIGN = -1.0f, VERTICAL_SIGN = -1.0f;
 
 typedef struct { float x, y, z; } vec;
-static const vec screen_normal = {0, 0, 1};
 static const vec screen_right = {1, 0, 0};
 static const vec screen_up = {0, 1, 0};
 
@@ -45,12 +46,13 @@ static vec perpendicular(vec a, vec axis) { return add(a, scale(axis, -dot(a, ax
 
 static vec pitch_axis(vec gravity, vec prior)
 {
-    vec axis = cross(gravity, screen_normal);
-    if (dot(axis, axis) < 0.04f) {
-        axis = perpendicular(prior, gravity);
-        if (dot(axis, axis) < 0.04f) axis = perpendicular(screen_right, gravity);
-        if (dot(axis, axis) < 0.04f) axis = perpendicular(screen_up, gravity);
-    }
+    /* Roll-invariant horizontal axis: perpendicular to both gravity and the
+     * board's own x axis. cross(gravity, screen_normal) rotated into the
+     * fore/aft axis while the wrist rolled, which leaked horizontal motion into
+     * dy (measured dy +1..+7 on "push right edge down"). */
+    vec axis = perpendicular(screen_right, gravity);
+    if (dot(axis, axis) < 0.04f) axis = perpendicular(prior, gravity);
+    if (dot(axis, axis) < 0.04f) axis = perpendicular(screen_up, gravity);
     axis = unit(axis);
     return dot(prior, axis) < 0 ? scale(axis, -1) : axis;
 }
@@ -155,7 +157,10 @@ static void mouse_task(void *unused)
             vec gyro = {sample.gyroX, sample.gyroY, sample.gyroZ};
             float accel_mag = sqrtf(dot(accel, accel));
             if (!atomic_load(&calibrated)) {
-                if (fabsf(accel_mag - GRAVITY) > 1.0f || dot(gyro, gyro) > 64 ||
+                /* 1.0 m/s^2 is only ~10 % of g, but the sensor reads ~6.8 %
+                 * high (10.47 vs 9.80665), which left almost no margin for a
+                 * hand-held board. Scale the tolerance instead. */
+                if (fabsf(accel_mag - GRAVITY) > 0.15f * GRAVITY || dot(gyro, gyro) > 64 ||
                     (collected && dot(unit(accel), unit(sum_accel)) < 0.999f)) {
                     collected = 0;
                     sum_accel = sum_gyro = (vec){0};
@@ -243,7 +248,10 @@ esp_err_t mouse_init(void)
     ESP_RETURN_ON_ERROR(qmi8658_enable_sensors(&imu, 0), TAG, "standby");
     button_events = xQueueCreate(16, sizeof(uint8_t));
     ESP_RETURN_ON_FALSE(button_events, ESP_ERR_NO_MEM, TAG, "Touch button queue");
-    available = xTaskCreate(mouse_task, "air_mouse", 4096, NULL, 7, NULL) == pdPASS;
+    /* 4 KiB was tight: the task carries sensor samples, float pose math and
+ * logging; an overflow corrupts the neighbouring heap block (observed as a
+ * Store access fault around leaving Gyro mode). */
+available = xTaskCreate(mouse_task, "air_mouse", 6144, NULL, 7, NULL) == pdPASS;
     if (!available) {
         vQueueDelete(button_events);
         button_events = NULL;

@@ -9,7 +9,9 @@
 #include "app_ui.h"
 #include "ble_mouse.h"
 #include "board.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "lvgl_private.h"
 #include "rtc_board.h"
 #include "voice.h"
 
@@ -518,9 +520,37 @@ void app_ui_refresh_clock(void)
     note_activity();
 }
 
+/* Standby clock glyphs are 90x128 px. LVGL allocates an A8 mask per glyph from
+ * its own pool (about 11.5 KiB for a digit), which cannot fit next to the rest
+ * of the UI. Send font draw buffers to the system heap instead: only a few KiB
+ * are used while a big label is drawn, and the 20 KiB LVGL pool stays free. */
+static void *font_draw_malloc(size_t size, lv_color_format_t color_format)
+{
+    (void)color_format;
+    return heap_caps_malloc(size, MALLOC_CAP_8BIT);
+}
+
+static void font_draw_free(void *buffer)
+{
+    heap_caps_free(buffer);
+}
+
+static void font_draw_buffers_to_heap(void)
+{
+    static lv_draw_buf_handlers_t handlers;
+    lv_draw_buf_handlers_t *defaults = lv_draw_buf_get_font_handlers();
+    if (defaults == NULL) return;
+    handlers = *defaults;
+    handlers.buf_malloc_cb = font_draw_malloc;
+    handlers.buf_free_cb = font_draw_free;
+    LV_GLOBAL_DEFAULT()->font_draw_buf_handlers = handlers;
+    ESP_LOGI(TAG, "standby font masks: system heap");
+}
+
 bool app_ui_init(lv_display_t *display)
 {
     if (!board_lock(1000)) return false;
+    font_draw_buffers_to_heap();
     lv_obj_t *screen = lv_display_get_screen_active(display);
     lv_obj_set_style_bg_color(screen, lv_color_hex(0x0b121d), 0);
     lv_obj_set_style_text_color(screen, lv_color_hex(0xc2cedb), 0);

@@ -488,18 +488,10 @@ static void voice_task(void *unused)
         /* voice_start() took the busy hold so the standby page cannot appear
          * between the click and this task; every exit below must release it,
          * including the two early failures. */
-        if (audio_open() != ESP_OK) {
-            ESP_LOGE(TAG, "PCM buffer allocation failed");
-            atomic_store(&state, VOICE_AUDIO_ERROR);
-            app_busy_release(APP_BUSY_VOICE);
-            continue;
-        }
-        xStreamBufferReset(audio);
-        sequence = 0;
-        atomic_store(&client_fd, -1);
-        atomic_store(&capture_done, false);
-        atomic_store(&capture_allowed, false);
-        atomic_store(&terminal_result, VOICE_IDLE);
+        /* BLE owns the largest contiguous blocks. Release it *before* asking
+         * for the 16 KiB PCM ring; with Bluedroid still up the C6 has no
+         * 16385-byte contiguous 8-bit block, which is why audio_open() used to
+         * fail before the session even reached AUTH. */
         esp_err_t released = ble_mouse_release();
         if (released != ESP_OK) {
             /* The BLE stack could not be torn down safely (an ATTEST confirm is
@@ -513,6 +505,19 @@ static void voice_task(void *unused)
             continue;
         }
         ESP_LOGI(TAG, "BT released, heap free %u", (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+        if (audio_open() != ESP_OK) {
+            ESP_LOGE(TAG, "PCM buffer allocation failed after BLE release");
+            ble_mouse_resume();
+            atomic_store(&state, VOICE_AUDIO_ERROR);
+            app_busy_release(APP_BUSY_VOICE);
+            continue;
+        }
+        xStreamBufferReset(audio);
+        sequence = 0;
+        atomic_store(&client_fd, -1);
+        atomic_store(&capture_done, false);
+        atomic_store(&capture_allowed, false);
+        atomic_store(&terminal_result, VOICE_IDLE);
         voice_state_t result = radio_up() == ESP_OK ? connect_wifi() : VOICE_NO_WIFI;
         ESP_LOGI(TAG, "Wi-Fi %s, heap free %u", result == VOICE_IDLE ? "ready" : "unavailable",
                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
