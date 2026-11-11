@@ -5,12 +5,18 @@
 #include <string.h>
 
 #include "air_mouse.h"
+#include "app_busy.h"
 #include "app_ui.h"
 #include "ble_mouse.h"
 #include "board.h"
 #include "esp_log.h"
 #include "rtc_board.h"
 #include "voice.h"
+
+/* Standby clock face: 160 px Montserrat with only 0123456789: (generated with
+ * lv_font_conv, see fonts/ui_font_standby_160.c). LVGL's built-in faces stop at
+ * 48 px; the bitmap lives in rodata, so it costs flash, not LVGL heap. */
+extern const lv_font_t ui_font_standby_160;
 
 static const char *TAG = "air_remote";
 static lv_obj_t *date_label, *clock_label, *bt_label, *battery_label, *status_label;
@@ -27,6 +33,45 @@ static uint32_t last_interaction, last_battery_update, last_clock_update;
  * render tick (<= 125 ms) repaints instead of waiting for the 1 s cadence. */
 static volatile bool clock_dirty = true;
 static int brightness = -1;
+
+/* Standby page: after a minute without any interaction the panel goes black
+ * with just the wall clock and the backlight drops to
+ * UI_STANDBY_BRIGHTNESS_PERCENT. Every input source calls note_activity();
+ * long-lived features hold the board through app_busy instead of adding their
+ * own exception here. */
+#define UI_STANDBY_IDLE_MS 60000
+#define UI_STANDBY_BRIGHTNESS_PERCENT 80
+#define UI_BRIGHTNESS_ACTIVE 100
+#define UI_BRIGHTNESS_IDLE 60
+
+/* The clock is five fixed cells (H H : M M) of the 160 px face: 4 x 100 +
+ * 50 = 450 px, so the row fills the 480 px screen (15 px each side) and the
+ * digits never shift as the time changes. */
+#define STANDBY_DIGIT_W 100
+#define STANDBY_COLON_W 50
+
+static lv_obj_t *standby_page, *standby_row;
+static lv_obj_t *standby_cell[5];
+static const int standby_cell_x[5] = {0, 100, 200, 250, 350};
+static const int standby_cell_w[5] = {STANDBY_DIGIT_W, STANDBY_DIGIT_W,
+                                      STANDBY_COLON_W,
+                                      STANDBY_DIGIT_W, STANDBY_DIGIT_W};
+static lv_indev_t *touch_indev;
+static bool standby_active;
+static volatile uint32_t last_activity;
+static int standby_brightness = UI_BRIGHTNESS_IDLE;
+static voice_state_t last_voice_seen = VOICE_IDLE;
+/* Set by the console test hook (app_ui.h) and consumed in render(). */
+static volatile bool standby_tap_request;
+static volatile char debug_click_request;
+
+/* Any interaction restarts the idle countdown. Also called from the USB
+ * console task (app_ui_refresh_clock): a 32-bit tick read/write is atomic
+ * enough here and the flag it already touches works the same way. */
+static void note_activity(void)
+{
+    last_activity = lv_tick_get();
+}
 
 /* Centre popup used for the Gyro calibration feedback. */
 typedef enum { HINT_NONE, HINT_CALIBRATING, HINT_FAILED } hint_mode_t;
@@ -139,11 +184,145 @@ static void hide_hint(void)
     if (hint_panel) lv_obj_set_hidden(hint_panel, true);
 }
 
+static void apply_brightness(int requested)
+{
+    if (requested != brightness && board_set_brightness(requested) == ESP_OK) brightness = requested;
+}
+
+/* The board counts as "in use" while any long-lived feature holds it: a voice
+ * session from start to its terminal state, the gyro/mouse runtime, and
+ * blocking console commands. Those holds live in app_busy so a new feature
+ * only has to acquire/release there instead of patching the standby timer. */
+static bool standby_hold(void)
+{
+    return app_busy_active();
+}
+
+/* Refresh the standby clock once a second; it keeps ticking while the page is
+ * up because this runs from the same 125 ms render timer. */
+static void update_standby_clock(bool force)
+{
+    static uint32_t last_sample;
+    if (!force && lv_tick_elaps(last_sample) < 1000) return;
+    last_sample = lv_tick_get();
+    char text[8];
+    rtc_board_time_text(text, sizeof(text));
+    if (strlen(text) < 5) return;
+    bool changed = false;
+    for (int i = 0; i < 5; i++) {
+        char cell[2] = {text[i], 0};
+        if (strcmp(lv_label_get_text(standby_cell[i]), cell) != 0) {
+            lv_label_set_text(standby_cell[i], cell);
+            changed = true;
+        }
+    }
+    if (changed) {
+        ESP_LOGI(TAG, "standby: clock %c%c:%c%c, row %dx%d px", text[0], text[1], text[3],
+                 text[4], (int)lv_obj_get_width(standby_row), (int)lv_obj_get_height(standby_row));
+    }
+}
+
+/* True when the standby page is the object under this button's centre, i.e. a
+ * tap there would be swallowed by the page instead of clicking the button. */
+static int page_covers(lv_obj_t *button)
+{
+    lv_area_t area;
+    lv_obj_get_coords(button, &area);
+    lv_point_t center = {(area.x1 + area.x2) / 2, (area.y1 + area.y2) / 2};
+    return lv_obj_hit_test(standby_page, &center) ? 1 : 0;
+}
+
+static void enter_standby(void)
+{
+    standby_active = true;
+    standby_brightness = brightness > 0 ? brightness : UI_BRIGHTNESS_IDLE;
+    lv_obj_move_to_index(standby_page, -1); /* keep it above hint_panel/status */
+    lv_obj_set_hidden(standby_page, false);
+    update_standby_clock(true);
+    /* The page is opaque, topmost and clickable, so a wake tap lands on it.
+     * The cover flags are the geometry proof for the hardware test. */
+    ESP_LOGI(TAG, "standby: enter, idle %u ms, brightness %d -> %d, busy 0x%x, "
+             "ble=%d gen=%u, page top=%d/%d covers voice=%d gyro=%d a=%d b=%d",
+             (unsigned)lv_tick_elaps(last_activity), standby_brightness,
+             UI_STANDBY_BRIGHTNESS_PERCENT, app_busy_mask(), ble_mouse_connected() ? 1 : 0,
+             ble_mouse_generation(), (int)lv_obj_get_index(standby_page),
+             (int)lv_obj_get_child_count(lv_obj_get_parent(standby_page)),
+             page_covers(voice_button), page_covers(gyro_button), page_covers(a_button),
+             page_covers(b_button));
+}
+
+static void leave_standby(const char *why)
+{
+    standby_active = false;
+    lv_obj_set_hidden(standby_page, true);
+    /* Back to the level the panel had before the page took over (60% in the
+     * steady state) instead of a hard-coded 100; the render policy keeps owning
+     * the 25 s idle step from there. */
+    if (board_set_brightness(standby_brightness) == ESP_OK) brightness = standby_brightness;
+    clock_dirty = true;
+    ESP_LOGI(TAG, "standby: wake (%s), brightness %d, ble=%d gen=%u", why, standby_brightness,
+             ble_mouse_connected() ? 1 : 0, ble_mouse_generation());
+}
+
+/* Every touch, whichever object it hits. Waking consumes the press: it was
+ * routed to the standby page (see enter_standby), so no button sees it. */
+static void touch_pressed(lv_event_t *event)
+{
+    note_activity();
+    if (standby_active) leave_standby("touch");
+}
+
 static void render(lv_timer_t *timer)
 {
     voice_state_t voice = voice_state();
     bool recording_mode = voice_busy(voice);
     bool linked = ble_mouse_connected();
+
+    /* Touches arrive in touch_pressed() through the input device; the USB
+     * console calls note_activity() from app_ui_refresh_clock(); voice and gyro
+     * hold the board through app_busy below. */
+    if (voice != last_voice_seen) {
+        last_voice_seen = voice;
+        note_activity();
+    }
+
+    /* Console test hook: inject the same input-device press a finger makes. */
+    if (standby_tap_request) {
+        standby_tap_request = false;
+        if (standby_active && touch_indev) {
+            ESP_LOGI(TAG, "standby: console tap");
+            lv_indev_send_event(touch_indev, LV_EVENT_PRESSED, standby_page);
+            lv_indev_send_event(touch_indev, LV_EVENT_RELEASED, standby_page);
+        }
+    }
+
+    /* Console test hook: play the click a finger would make on Gyro/Voice. */
+    if (debug_click_request) {
+        char which = debug_click_request;
+        debug_click_request = 0;
+        lv_obj_t *button = which == 'g' ? gyro_button : which == 'v' ? voice_button : NULL;
+        if (button) {
+            ESP_LOGI(TAG, "console click %c", which);
+            lv_obj_send_event(button, LV_EVENT_SHORT_CLICKED, NULL);
+        }
+    }
+
+    if (standby_active) {
+        if (standby_hold()) {
+            leave_standby("feature busy");
+        } else {
+            update_standby_clock(false);
+            apply_brightness(UI_STANDBY_BRIGHTNESS_PERCENT);
+            return; /* the page hides every other widget; nothing else to draw */
+        }
+    } else if (standby_hold()) {
+        /* A voice session, the gyro runtime or a console command owns the
+         * board: no countdown runs, and it starts over once the hold ends. */
+        note_activity();
+    } else if (lv_tick_elaps(last_activity) >= UI_STANDBY_IDLE_MS) {
+        enter_standby();
+        return;
+    }
 
     /* Date + time in the top-left corner. Sampling once per second keeps the
      * I2C reads out of the 125 ms path, and update_label() only calls
@@ -178,8 +357,11 @@ static void render(lv_timer_t *timer)
     }
 
     /* A failed zero-rate calibration stops the sensor task silently; report it
-     * in the popup and drop back to idle so the button can be retried. */
+     * in the popup and drop back to idle so the button can be retried. The
+     * explicit mouse_stop() also releases the gyro busy hold: this failure path
+     * never goes through the button callback that normally stops the mode. */
     if (mouse_active && mouse_failed()) {
+        mouse_stop();
         mouse_active = false;
         hint_mode = HINT_FAILED;
         show_hint("Calibration failed, try again", 1500);
@@ -229,13 +411,14 @@ static void render(lv_timer_t *timer)
 
     /* Keep the panel bright: at the old idle level a dark UI reads as "dead".
      * Full brightness while the user interacts, 60% once it has been idle for
-     * 25 s, and always full for the first 5 s after boot. */
+     * 25 s, and always full for the first 5 s after boot. The standby page has
+     * its own (dimmer) level; see enter_standby(). */
     static uint32_t boot_tick;
     uint32_t now = lv_tick_get();
     if (boot_tick == 0) boot_tick = now;
     bool active = mouse_active || recording_mode || lv_tick_elaps(last_interaction) < 25000;
-    int requested = (active || now - boot_tick < 5000) ? 100 : 60;
-    if (requested != brightness && board_set_brightness(requested) == ESP_OK) brightness = requested;
+    int requested = (active || now - boot_tick < 5000) ? UI_BRIGHTNESS_ACTIVE : UI_BRIGHTNESS_IDLE;
+    apply_brightness(requested);
 }
 
 static lv_obj_t *make_button(lv_obj_t *parent, int x, int y, uint32_t color)
@@ -330,6 +513,9 @@ void app_ui_set_capabilities(bool mouse, bool ble, bool voice)
 void app_ui_refresh_clock(void)
 {
     clock_dirty = true;
+    /* Called from the USB console task after AR1T/AR1Z: a host-side change is
+     * activity too, and it must never be swallowed by a standby switch. */
+    note_activity();
 }
 
 bool app_ui_init(lv_display_t *display)
@@ -417,16 +603,81 @@ bool app_ui_init(lv_display_t *display)
     lv_obj_center(hint_label);
     lv_obj_set_hidden(hint_panel, true);
 
-    last_interaction = lv_tick_get();
-    lv_timer_create(render, 125, NULL);
-    render(NULL);
     /* Boot-time diagnostic: how much of the LVGL heap the UI actually needs. */
     lv_mem_monitor_t mon;
     lv_mem_monitor(&mon);
     ESP_LOGI(TAG, "lvgl mem: total=%u free=%u max_used=%u biggest=%u frag=%u%%",
              (unsigned)mon.total_size, (unsigned)mon.free_size, (unsigned)mon.max_used,
              (unsigned)mon.free_biggest_size, (unsigned)mon.frag_pct);
+    uint32_t free_before = mon.free_size;
+
+    /* Standby page: opaque black, topmost and clickable, so a wake tap lands on
+     * it and never on a button underneath. Created once and only shown/hidden,
+     * so entering and leaving standby neither rebuilds nor reallocates the UI. */
+    standby_page = lv_obj_create(screen);
+    lv_obj_remove_style_all(standby_page);
+    lv_obj_set_size(standby_page, LV_PCT(100), LV_PCT(100));
+    lv_obj_set_pos(standby_page, 0, 0);
+    lv_obj_set_style_bg_color(standby_page, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(standby_page, LV_OPA_COVER, 0);
+    lv_obj_set_scrollable(standby_page, false);
+    lv_obj_set_clickable(standby_page, true);
+    /* Clock row: five fixed cells so the time always spans 450 px and the
+     * digits cannot shift while the minutes change. */
+    standby_row = lv_obj_create(standby_page);
+    lv_obj_remove_style_all(standby_row);
+    lv_obj_set_size(standby_row, STANDBY_DIGIT_W * 4 + STANDBY_COLON_W,
+                    lv_font_get_line_height(&ui_font_standby_160));
+    lv_obj_align(standby_row, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_scrollable(standby_row, false);
+    lv_obj_set_clickable(standby_row, false);
+    for (int i = 0; i < 5; i++) {
+        standby_cell[i] = lv_label_create(standby_row);
+        lv_obj_set_width(standby_cell[i], standby_cell_w[i]);
+        lv_obj_set_style_text_align(standby_cell[i], LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_style_text_font(standby_cell[i], &ui_font_standby_160, 0);
+        lv_obj_set_style_text_color(standby_cell[i], lv_color_white(), 0);
+        lv_label_set_text(standby_cell[i], i == 2 ? ":" : "0");
+        lv_obj_align(standby_cell[i], LV_ALIGN_TOP_LEFT, standby_cell_x[i], 0);
+    }
+    lv_obj_set_hidden(standby_page, true);
+
+    /* One callback on the input device sees every touch, whichever object it
+     * hits; that is the phone-wide "touch = interaction" reset point. */
+    for (lv_indev_t *indev = lv_indev_get_next(NULL); indev; indev = lv_indev_get_next(indev)) {
+        if (!touch_indev && lv_indev_get_type(indev) == LV_INDEV_TYPE_POINTER) {
+            touch_indev = indev;
+            lv_indev_add_event_cb(indev, touch_pressed, LV_EVENT_PRESSED, NULL);
+        }
+    }
+    if (!touch_indev) ESP_LOGW(TAG, "no pointer input device: standby wake by touch disabled");
+
+    last_interaction = lv_tick_get();
+    last_activity = last_interaction;
+    lv_timer_create(render, 125, NULL);
+    render(NULL);
+    /* The standby clock face is a 160 px Montserrat subset whose glyph bitmaps
+     * live in rodata; only the six page objects cost LVGL heap. */
+    lv_mem_monitor(&mon);
+    ESP_LOGI(TAG, "lvgl mem +standby page: free=%u biggest=%u delta=%u B",
+             (unsigned)mon.free_size, (unsigned)mon.free_biggest_size,
+             (unsigned)(free_before - mon.free_size));
     board_unlock();
     return true;
+}
+
+bool app_ui_standby_active(void)
+{
+    return standby_active;
+}
+
+void app_ui_standby_tap(void)
+{
+    standby_tap_request = true;
+}
+
+void app_ui_debug_click(char which)
+{
+    debug_click_request = which;
 }
 

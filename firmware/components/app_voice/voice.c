@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include "app_busy.h"
 #include "ble_mouse.h"
 #include "board.h"
 #include "esp_check.h"
@@ -484,9 +485,13 @@ static void voice_task(void *unused)
 {
     for (;;) {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        /* voice_start() took the busy hold so the standby page cannot appear
+         * between the click and this task; every exit below must release it,
+         * including the two early failures. */
         if (audio_open() != ESP_OK) {
             ESP_LOGE(TAG, "PCM buffer allocation failed");
             atomic_store(&state, VOICE_AUDIO_ERROR);
+            app_busy_release(APP_BUSY_VOICE);
             continue;
         }
         xStreamBufferReset(audio);
@@ -504,6 +509,7 @@ static void voice_task(void *unused)
             ESP_LOGE(TAG, "BT release failed: %s, aborting voice session", esp_err_to_name(released));
             ble_mouse_resume();
             atomic_store(&state, VOICE_NETWORK_ERROR);
+            app_busy_release(APP_BUSY_VOICE);
             continue;
         }
         ESP_LOGI(TAG, "BT released, heap free %u", (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
@@ -518,6 +524,7 @@ static void voice_task(void *unused)
         ESP_LOGI(TAG, "Voice session ended (%d), heap free %u", result,
                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
         atomic_store(&state, result);
+        app_busy_release(APP_BUSY_VOICE);
     }
 }
 
@@ -534,6 +541,10 @@ esp_err_t voice_start(void)
     atomic_store(&stop_requested, false);
     atomic_store(&end_action, VOICE_ACTION_NONE);
     atomic_store(&state, VOICE_CONNECTING);
+    /* Hold the idle timer from this instant, so the 60 s countdown cannot fire
+     * between the click and the worker taking over; voice_task releases it on
+     * every exit path. */
+    app_busy_acquire(APP_BUSY_VOICE);
     xTaskNotifyGive(voice_worker);
     return ESP_OK;
 }

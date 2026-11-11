@@ -5,6 +5,7 @@
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
+#include "app_busy.h"
 #include "app_ui.h"
 #include "driver/usb_serial_jtag.h"
 #include "driver/usb_serial_jtag_vfs.h"
@@ -95,8 +96,12 @@ static void set_time(const char *text)
         return;
     }
     /* Writes the system clock and the battery-backed RTC; the UI repaints on
-     * its next 125 ms tick so the screen shows the new time at once. */
-    if (rtc_board_set_unix((int64_t)value) != ESP_OK) {
+     * its next 125 ms tick so the screen shows the new time at once. The busy
+     * hold keeps a standby switch from running inside the external time set. */
+    app_busy_acquire(APP_BUSY_CONSOLE);
+    esp_err_t err = rtc_board_set_unix((int64_t)value);
+    app_busy_release(APP_BUSY_CONSOLE);
+    if (err != ESP_OK) {
         puts("AR1T ERR");
         return;
     }
@@ -119,13 +124,47 @@ static void set_timezone(const char *text)
         puts("AR1Z ERR");
         return;
     }
-    if (rtc_board_set_tz_minutes((int)value) != ESP_OK) {
+    app_busy_acquire(APP_BUSY_CONSOLE);
+    esp_err_t err = rtc_board_set_tz_minutes((int)value);
+    app_busy_release(APP_BUSY_CONSOLE);
+    if (err != ESP_OK) {
         puts("AR1Z ERR");
         return;
     }
     app_ui_refresh_clock();
     printf("AR1Z OK %ld\n", value);
 }
+
+#if APP_UI_STANDBY_TEST_HOOK
+/* TEMP: the standby page is woken by a touch, which no script can produce, so
+ * the console reports the state and plays back the same input-device press the
+ * touch panel would deliver (see app_ui_standby_tap). */
+static void standby_status(void)
+{
+    printf("AR1 STANDBY %d\n", app_ui_standby_active() ? 1 : 0);
+}
+
+static void standby_tap(void)
+{
+    app_ui_standby_tap();
+    puts("AR1 STANDBY TAP");
+}
+
+/* Play the click a finger would make on one of the mode buttons, for tests
+ * that need the gyro (and its calibration popup) without a hand on the panel. */
+static void standby_button(const char *name)
+{
+    if (strcmp(name, "GYRO") == 0) {
+        app_ui_debug_click('g');
+        puts("AR1 BUTTON GYRO");
+    } else if (strcmp(name, "VOICE") == 0) {
+        app_ui_debug_click('v');
+        puts("AR1 BUTTON VOICE");
+    } else {
+        puts("AR1 BUTTON ERR");
+    }
+}
+#endif
 
 static void serial_task(void *unused)
 {
@@ -149,6 +188,11 @@ static void serial_task(void *unused)
                 if (!overflow && strncmp(line, "AR1W ", 5) == 0) set_wifi(line + 5);
                 if (!overflow && strncmp(line, "AR1T ", 5) == 0) set_time(line + 5);
                 if (!overflow && strncmp(line, "AR1Z ", 5) == 0) set_timezone(line + 5);
+#if APP_UI_STANDBY_TEST_HOOK
+                if (!overflow && strcmp(line, "AR1S") == 0) standby_status();
+                if (!overflow && strcmp(line, "AR1S TAP") == 0) standby_tap();
+                if (!overflow && strncmp(line, "AR1B ", 5) == 0) standby_button(line + 5);
+#endif
                 /* TEMP: start a voice session over USB for memory/protocol
                  * testing while the touch panel is not being operated. */
                 if (!overflow && strcmp(line, "AR1V") == 0) {

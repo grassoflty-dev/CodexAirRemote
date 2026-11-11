@@ -138,6 +138,9 @@ windows\Flash.cmd
 | `AR1V` | `AR1 VOICE STARTED` / `AR1 VOICE BUSY` | **临时调试入口**：经 USB 启动一次语音会话（无头实测用，见 `docs/pending-hardware-validation.md`）；最终交付前再决定是否移除 |
 | `AR1T <unix 秒>` | `AR1T OK <unix>` / `AR1T ERR` | 设置板端时间：把 **UTC** 写入 PCF85063A（掉电保持）并同步系统时钟；屏幕立即刷新 |
 | `AR1Z <分钟>` | `AR1Z OK <分钟>` / `AR1Z ERR` | 设置**显示时区**（东为正，-720…+840，如 `480`=UTC+8、`540`=UTC+9、`0`=UTC），写入 NVS 持久化 |
+| `AR1S` | `AR1 STANDBY <0\|1>` | **临时调试入口**：查询当前是否停在待机页（无头实测用，随 `APP_UI_STANDBY_TEST_HOOK` 一起移除） |
+| `AR1S TAP` | `AR1 STANDBY TAP` | **临时调试入口**：播放一次「输入设备按下」，等价于手指点一下待机页；脚本无法真的按屏幕，故用它验证唤醒 |
+| `AR1B GYRO` / `AR1B VOICE` | `AR1 BUTTON GYRO` / `AR1 BUTTON VOICE` | **临时调试入口**：播放一次对应按钮的点击，用于无手操作时触发陀螺仪（含校准弹窗）或语音会话 |
 
 - `<flags>` 是位掩码：bit0 = IMU 就绪，bit1 = BLE 就绪，bit2 = 语音就绪；`7` 表示全部就绪，`0` 表示板级初始化失败。
 - **RTC 存的是 UTC**：`AR1T` 写入什么就是什么，不做任何时区换算。屏幕显示 = RTC 里的 UTC + `AR1Z` 偏移（默认 `480` = UTC+8，存于 NVS namespace `airremote_time`、key `tz_min`）。**换时区只需重发 `AR1Z`，不用重发时间**；反过来说，改时区偏移不会改变已经写进 RTC 的绝对时间。
@@ -178,11 +181,19 @@ windows\Flash.cmd
 | B 按钮 | `(288, 300)`，150×112 |
 | 状态文字 | 居中，`y=416`，宽 420，自动换行；空闲时不显示 |
 | Gyro 校准弹窗 | 居中 300×120，圆角 18，深色半透明，不可点击（触摸穿透到按钮） |
+| 待机页 | 全屏纯黑叠层（最后创建、最上层、可点击），居中 `HH:MM`：自定义 Montserrat 160 px 子集（只含 `0123456789:`），5 个固定格 4×100+50=450 px，白色；背光 80 |
 
 - 两个模式互斥，模式按钮在另一模式进行中禁用。
-- 亮度在活动/录音时为 70，空闲 25 秒后降到 24。
+- 亮度：交互/录音时 100，空闲 25 秒后降到 60，开机前 5 秒强制 100，待机页 80（`UI_STANDBY_BRIGHTNESS_PERCENT`）。
 - 电量每秒通过 AXP2101 刷新；无电池时显示 `--`。
 - 左上角日期 + 时钟 = 时间源（`time()`，`AR1T` 之后可用；否则每约 1 秒读一次 PCF85063A）+ `AR1Z` 偏移；两者都没有可用时间时显示 `----/--/--` 与 `--:--`。`render()` 里 1 秒采样一次，且只在文本真正变化时才 `lv_label_set_text`。
+- **待机页**：连续 60 秒没有任何「功能占用」也没有交互（`UI_STANDBY_IDLE_MS`）后自动盖上一层黑底 + 居中大时间并把背光降到 80%；大时间每秒刷新，待机期间 BLE 连接、HID 服务、RTC、电源键长按关机都不动。
+  - 交互重置点：触摸（输入设备回调，任何位置/任何控件）、Voice/Gyro/A/B 四个按钮、USB 控制台的 `AR1T`/`AR1Z`。
+  - **功能占用（`app_busy`）**：语音整个会话（`APP_BUSY_VOICE`）、陀螺仪整个运行期（`APP_BUSY_GYRO`，含校准）、串口校时等阻塞命令（`APP_BUSY_CONSOLE`）。只要有任一占用，60 秒计时器就不走（每次 tick 归零）；占用释放后从 0 重新计时。新增长驻功能只需在 `app_busy` 里 acquire/release，不用改待机逻辑。
+  - 占用用的是位掩码，acquire/release 对同一持有者幂等；漏 release 会让位mask 卡住（日志可见），重复 release 只打一条警告、不会误放别人的占用。
+  - 唤醒：触摸任意位置。待机页是最后一层可点击的全屏对象，这一下点击被它吃掉，不会穿透到 A/B/Voice/Gyro；背光回到进待机前的值（不是写死 100），布局原样恢复。
+  - 唤醒后再静置 60 秒会再次进入待机（可重复）；期间不重建 UI、不申请内存（页面开机时创建一次，只切换可见性）。
+  - 大时钟字体是离线生成的子集（`npx lv_font_conv --font Montserrat_400Regular.ttf --symbols "0123456789:" --size 160 --bpp 4 --format lvgl --lv-font-name ui_font_standby_160 --no-compress`），TTF 从 npm 的 `@expo-google-fonts/montserrat` 取；生成物是 `components/app_ui/fonts/ui_font_standby_160.c`，位图在 rodata（flash），不占 LVGL 堆，只增加约 48 KB app 体积。
 - 状态文字是事件而不是常驻提示：`Mouse stopped`、`PC voice unavailable` 等 3 秒后自动消失，因此空闲屏幕上只有日期、时间与右上角图标。
 - Gyro 校准进度与失败结果走屏幕中央的小弹窗（`Hold the board still...` / `Calibration failed, try again`，失败信息 1.5 秒后自动关闭）；弹窗不用 `lv_msgbox`，避免它自己的事件循环挡住 A/B 的触摸。
 - UI 刷新定时器 125 ms，渲染时同步 A/B 按钮的可用状态和提示文字。
@@ -287,6 +298,7 @@ firmware/
    ├─ app_mouse/         # QMI8658 陀螺仪 + BLE HID 鼠标
    ├─ app_voice/         # TLS/WSS 语音链路、单播发现、录音/推流
    ├─ app_provision/     # USB Serial/JTAG 配网与串口命令
+   ├─ app_busy/          # 「板子正被某功能占用」的位掩码（待机计时只在这里放行）
    ├─ rtc_board/         # PCF85063A 实时时钟（I2C 0x51）与本地时间格式化
    └─ codec_board/       # 编解码板级配置（board_cfg.txt）
 env/                     # 环境配置（gitignore）：ESP-IDF 5.5.5 + 工具链，见 env/README.md
@@ -303,7 +315,8 @@ env/                     # 环境配置（gitignore）：ESP-IDF 5.5.5 + 工具�
 | 实时时钟（PCF85063A、RTC 存 UTC、显示时区 `AR1Z`、掉电保持待实测） | `rtc_board` | `components/rtc_board/rtc_board.c`、`include/rtc_board.h` |
 | 陀螺仪空中鼠标 / A-B 按键 | `app_mouse` | `air_mouse.c`、`air_mouse.h` |
 | BLE HID（GATTS 回调、CCC 就绪、按键对账、release/resume） | `app_mouse` | `ble_mouse.c`、`ble_mouse.h` |
-| LVGL UI（状态/Gyro/Voice/A/B、亮度息屏、左上角时钟） | `app_ui` | `components/app_ui/app_ui.c` |
+| LVGL UI（状态/Gyro/Voice/A/B、亮度息屏、左上角时钟、待机页） | `app_ui` | `components/app_ui/app_ui.c`、`components/app_ui/fonts/ui_font_standby_160.c` |
+| 功能占用（语音/陀螺仪/串口命令，待机计时的唯一开关） | `app_busy` | `components/app_busy/app_busy.c`、`include/app_busy.h` |
 | 语音链路（TLS1.2/WSS、单播发现、WIFI_PS_NONE、PCM 帧） | `app_voice` | `voice.c`、`voice.h` |
 | 配网 / 串口命令（含 AR1V 语音触发） | `app_provision` | `provision.c`、`provision.h` |
 | 音频编解码（ES8311/ES7210、I2S TDM） | `bsp_board`/`codec_board` | `codec_bsp.cpp`、`codec_board/` |

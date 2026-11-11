@@ -2,6 +2,7 @@
 
 #include <math.h>
 #include <stdatomic.h>
+#include "app_busy.h"
 #include "ble_mouse.h"
 #include "board.h"
 #include "driver/i2c_master.h"
@@ -27,7 +28,7 @@ static const vec screen_right = {1, 0, 0};
 static const vec screen_up = {0, 1, 0};
 
 static qmi8658_dev_t imu;
-static atomic_bool requested, calibrated, failed;
+static atomic_bool requested, calibrated, failed, held;
 static bool available;
 static atomic_uint requested_buttons, mode_generation;
 static QueueHandle_t button_events;
@@ -258,6 +259,13 @@ esp_err_t mouse_start(void)
     atomic_store(&calibrated, false);
     atomic_fetch_add(&mode_generation, 1);
     atomic_store(&requested, true);
+    /* The whole gyro runtime holds the idle timer: calibration, mouse mode and
+     * the pose math all count as "the board is in use", so the standby page
+     * never appears in the middle of it. mouse_stop() releases it, and
+     * mouse_stop() is also what the UI calls for every failure the task
+     * reports (failed flag, calibration timeout, queue overflow). The atomic
+     * flag keeps acquire/release exactly paired even if stop runs twice. */
+    if (!atomic_exchange(&held, true)) app_busy_acquire(APP_BUSY_GYRO);
     ESP_LOGI(TAG, "mouse mode on, calibrating");
     return ESP_OK;
 }
@@ -267,6 +275,7 @@ void mouse_stop(void)
     atomic_store(&requested, false);
     atomic_store(&calibrated, false);
     atomic_store(&requested_buttons, 0);
+    if (atomic_exchange(&held, false)) app_busy_release(APP_BUSY_GYRO);
 }
 
 void mouse_button(uint8_t button, bool pressed)
