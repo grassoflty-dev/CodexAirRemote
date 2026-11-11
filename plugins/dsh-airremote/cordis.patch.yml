@@ -1,0 +1,4 @@
+# dsh-airremote bundle patch: register the plugin in the profile's cordis config.
+- insert:
+    - id: dsh-airremote
+      name: dsh-airremote

@@ -64,3 +64,13 @@ PyInstaller 的例外不会自动豁免其他依赖。当前辅助程序的打�
 - **ESP-IDF / VS Code / 工具链**均为本机全局安装，不在仓库中分发。
 
 后续升级依赖时，应重新核对实际安装版本的许可；源文件中的声明优先于本摘要。
+
+## dsh-airremote 插件（第三方来源复用）
+
+`plugins/dsh-airremote` 复用/改编了以下 MIT 项目代码，版权与许可保留在
+[`plugins/dsh-airremote/LICENSE-dsh-ears.txt`](plugins/dsh-airremote/LICENSE-dsh-ears.txt)：
+
+| 来源 | 许可 | 复用内容 | 修改点 |
+| --- | --- | --- | --- |
+| [dsh-ears](https://github.com/WizisCool/dsh-ears)（WizisCool，Copyright (c) JUNZE） | MIT | `src/shortcut.ts`（快捷键和弦解析/匹配，逐行保留语义） | 文件头注明来源；仅注释与导入路径调整 |
+| 同上 | MIT | M3 计划复用 whisper worker/协议/模型管理思路 | 按板子 PCM 链路重写适配层 |
