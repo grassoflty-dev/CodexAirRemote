@@ -1,5 +1,7 @@
 # Codex Air Remote
 
+> ⚠️ 开工前先 `git pull --ff-only origin main`（白天/晚上两台机器交替开发，不同步就会用旧代码构建）
+
 > **当前开发进度、未完成项与已知问题见 [`docs/开发进度.md`](docs/开发进度.md)**（2026-11-11 暂停开发时的快照，含 commit 清单、真机验证状态与事故记录）。
 
 Codex Air Remote 把一块带触摸屏的 ESP32 开发板变成 **DeepSeek Harness（DSH）** 的无线语音输入设备：板载麦克风音频经 TLS/WSS **直连 DSH 插件** `plugins/dsh-airremote`，由插件在本机用 whisper.cpp 转写并写入 DSH 草稿（**不经 VB-CABLE**）；切到陀螺仪模式后，开发板又变成一只蓝牙空中鼠标。仓库包含：
