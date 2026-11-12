@@ -34,6 +34,35 @@ ESP32-C6 ──WSS 47683──▶ host（TLS 客户端 + UDP 47682 发现）
 
 ## 安装
 
+### 方式一：从 DSH 插件索引安装（Discover，推荐）
+
+要求：DSH `>= 0.2.0-rc.1`，且已启用实验性插件市场 bundle
+`@deepseek-ai/dsh-experimental-plugin-market-bundle`（提供 **Plugins → Discover** 标签页）。
+
+1. 打开 **Plugins → Discover**，点 **Add index source**（添加索引源）；
+2. 填入本仓库的索引地址：
+
+   ```text
+   https://raw.githubusercontent.com/grassoflty-dev/CodexAirRemote/main/plugin-index.json
+   ```
+
+3. 在 Discover 里搜索 **Air Remote**（或 `dsh-airremote`），点 **Install**；
+4. 安装完成后到 **Plugins → Installed** 启用 `dsh-airremote`，重启 DSH 或按提示重载。
+
+索引里的每个版本都指向本仓库的一个固定 commit（`git+https://…&path:/plugins/dsh-airremote`），
+安装的是该 commit 的源码包；仓库已提交构建好的 `lib/`，所以安装时不需要在本地重新编译。
+
+### 方式二：直接安装（指定 commit）
+
+```text
+plugin_manager install_bundle  git+https://github.com/grassoflty-dev/CodexAirRemote.git#<40位commit>&path:/plugins/dsh-airremote
+```
+
+把它交给 DSH 的插件管理入口（或用安全启动器的 install-plugin 端点），**不要手工改 profile**。
+`plugin-index.json` 里的 `source.commit` 就是当前可用的 commit。
+
+### 本地开发安装（改代码时）
+
 ```powershell
 cd plugins/dsh-airremote
 npm install
@@ -41,7 +70,7 @@ npm run check
 npm run build
 ```
 
-然后必须走 DSH 插件管理安装（不要手工改 profile）：
+然后：
 
 ```text
 plugin_manager install_bundle  link:D:\C-Develop\CodexAirRemote\plugins\dsh-airremote

@@ -1,0 +1,74 @@
+{
+  "format": 1,
+  "title": {
+    "en": "Codex Air Remote",
+    "zh": "Codex Air Remote"
+  },
+  "description": {
+    "en": "ESP32-C6 board as a DSH voice-input microphone, with firmware flashing and board time (time zone) setup built in.",
+    "zh": "把 ESP32-C6 开发板变成 DSH 语音输入麦克风，并内置固件烧录与开发板时间（时区）设置。"
+  },
+  "metadata": {
+    "categories": {
+      "devtools": {
+        "title": {
+          "en": "Developer tools",
+          "zh": "开发工具"
+        }
+      },
+      "hardware": {
+        "title": {
+          "en": "Hardware",
+          "zh": "硬件"
+        }
+      }
+    }
+  },
+  "plugins": [
+    {
+      "name": "dsh-airremote",
+      "title": {
+        "en": "Air Remote (ESP32-C6)",
+        "zh": "Air Remote 语音遥控板"
+      },
+      "description": {
+        "en": "Turns a Waveshare ESP32-C6 touch board into a virtual microphone for the official DSH voice-input plugin; ships the firmware image, an in-browser flasher and board time/time-zone sync.",
+        "zh": "把微雪 ESP32-C6 触摸板变成 DSH 官方语音输入插件的虚拟麦克风；内置固件镜像、浏览器内烧录与开发板时间/时区同步。"
+      },
+      "author": "grassoflty-dev",
+      "homepage": "https://github.com/grassoflty-dev/CodexAirRemote/tree/main/plugins/dsh-airremote",
+      "repository": {
+        "url": "https://github.com/grassoflty-dev/CodexAirRemote",
+        "directory": "plugins/dsh-airremote"
+      },
+      "metadata": {
+        "category": "devtools",
+        "keywords": [
+          "dsh-plugin",
+          "dsh",
+          "deepseek-harness",
+          "esp32",
+          "esp32-c6",
+          "voice-input",
+          "whisper",
+          "firmware-flashing"
+        ]
+      },
+      "versions": [
+        {
+          "version": "0.3.0",
+          "publishTimestamp": 1794485070,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/grassoflty-dev/CodexAirRemote",
+            "commit": "52d6f883cf02138fb0cd9a9391171807d795f5c6",
+            "path": "plugins/dsh-airremote"
+          },
+          "engines": {
+            "dsh": ">=0.2.0-rc.1"
+          }
+        }
+      ]
+    }
+  ]
+}

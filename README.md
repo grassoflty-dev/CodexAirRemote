@@ -297,6 +297,7 @@ cd windows
 ## 迁移与验证状态
 
 - **当前状态总览**：见 [`docs/status.md`](docs/status.md)（滚动更新，含证据与阻塞项）。
+- **安装插件（含固件烧录/时区）**：见 [`docs/plugin-install-and-publish.md`](docs/plugin-install-and-publish.md)；DSH Discover 索引地址 `https://raw.githubusercontent.com/grassoflty-dev/CodexAirRemote/main/plugin-index.json`。
 - **已验证（2026-11-12）**：本机 + `env/` 内 IDF 构建 0 error；待机页（60 s / 80% 背光 / 大时钟每秒走字 / 触摸唤醒）✅；
   RTC + 时区（`AR1T`/`AR1Z`，开机 `display … tz +480`）✅；陀螺仪方向/滚转/yaw 与"动一会儿就不动"（HID 16 ms + 失败容错/CCC 重武装）✅；
   语音会话 BLE 释放→PCM 分配顺序与失败回滚（`hold -voice` 释放、BLE 恢复）✅；插件内置固件已升 **v0.4.1**。
