@@ -50,7 +50,7 @@ CONFIG_ESP_TLS_USE_DS_PERIPHERAL=n
 CONFIG_MBEDTLS_HARDWARE_AES=n
 
 # LVGL (managed component lvgl/lvgl 9.x)
-CONFIG_LV_MEM_SIZE=20480
+CONFIG_LV_MEM_SIZE=22528
 CONFIG_LV_ATTRIBUTE_FAST_MEM_USE_IRAM=y
 CONFIG_LV_FONT_MONTSERRAT_20=y
 CONFIG_LV_FONT_MONTSERRAT_28=y
@@ -58,13 +58,9 @@ CONFIG_LV_FONT_MONTSERRAT_28=y
 CONFIG_LV_FONT_MONTSERRAT_48=y
 CONFIG_LV_COLOR_16_SWAP=y
 CONFIG_LV_COLOR_SCREEN_TRANSP=y
-# Screen rotation for the function settings panel (90 deg steps, RAM only).
-# LVGL only renders lv_display_set_rotation() through its matrix transform
-# (src/core/lv_refr.c, inside #if LV_DRAW_TRANSFORM_USE_MATRIX), so the matrix
-# API has to be compiled in. The panel is driven by the SPI adapter in PARTIAL
-# render mode with a 12-row draw buffer, which the matrix path does not support
-# (lv_display_set_matrix_rotation() rejects anything but DIRECT/FULL), so the
-# actual band rotation happens in lvgl_bsp.cpp's flush callback; see the comment
-# there. LV_USE_MATRIX also selects LV_USE_FLOAT.
-CONFIG_LV_USE_MATRIX=y
-CONFIG_LV_DRAW_TRANSFORM_USE_MATRIX=y
+
+# The function settings panel keeps its widgets alive while hidden, and the
+# standby page is built on top of it; 20 KiB left only ~0 B free in the LVGL
+# pool after both existed. 22528 B keeps >= 2 KiB headroom for a frame.
+# Screen rotation is done in the flush callback (PARTIAL render mode), so the
+# LVGL matrix transform stays disabled.

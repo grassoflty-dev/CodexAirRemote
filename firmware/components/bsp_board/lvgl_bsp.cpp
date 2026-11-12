@@ -51,6 +51,7 @@ static lv_display_flush_cb_t adapter_flush_cb; /* the adapter's own flush */
 static int display_rotation;                   /* 0/90/180/270 */
 static bool rotate_in_flush;                   /* true = PARTIAL mode path */
 static uint8_t *rotate_buf;                    /* scratch, one draw buffer big */
+static bool rotate_buf_dma;                     /* scratch is DMA capable */
 static size_t rotate_buf_size;
 static unsigned rotate_fallbacks;              /* bands sent through unrotated */
 static bool rotate_first_logged;
@@ -200,19 +201,37 @@ extern "C" int Lvgl_SetDisplayRotation(int degrees)
 
     if (degrees != 0 && rotate_in_flush && rotate_buf == NULL) {
         /* Lazy: an untouched rotation setting costs no RAM. One draw buffer is
-         * the largest band LVGL can flush in PARTIAL mode. */
+         * the largest band LVGL can flush in PARTIAL mode.
+         *
+         * The buffer must be DMA capable: the SPI panel driver hands it to the
+         * QSPI DMA, and a plain 8-bit buffer made it copy through a private
+         * DMA buffer that failed to allocate for an 11.5 KiB band ("setup_dma_priv_buffer:
+         * Failed to allocate priv TX buffer"), which blocked LVGL forever on the
+         * first rotated flush. Fall back loudly instead of silently stalling. */
         size_t bytes = lv_display_get_draw_buf_size(disp);
-        rotate_buf = (uint8_t *)heap_caps_malloc(bytes, MALLOC_CAP_8BIT);
+        rotate_buf = (uint8_t *)heap_caps_malloc(bytes, MALLOC_CAP_DMA | MALLOC_CAP_8BIT);
+        rotate_buf_dma = rotate_buf != NULL;
         if (rotate_buf == NULL) {
-            ESP_LOGE(TAG, "rotation: scratch %u B alloc FAILED, free %u largest %u",
+            ESP_LOGE(TAG,
+                     "rotation: DMA scratch %u B FAILED (dma free %u largest %u); "
+                     "falling back to non-DMA, rotation may stall SPI",
+                     (unsigned)bytes,
+                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA),
+                     (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA));
+            rotate_buf = (uint8_t *)heap_caps_malloc(bytes, MALLOC_CAP_8BIT);
+        }
+        if (rotate_buf == NULL) {
+            ESP_LOGE(TAG, "rotation: scratch %u B alloc FAILED, 8bit free %u largest %u",
                      (unsigned)bytes,
                      (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
                      (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
             degrees = 0;
         } else {
             rotate_buf_size = bytes;
-            ESP_LOGI(TAG, "rotation: scratch %u B allocated, free %u", (unsigned)bytes,
-                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT));
+            ESP_LOGI(TAG, "rotation: scratch %u B allocated (%s), 8bit free %u dma free %u",
+                     (unsigned)bytes, rotate_buf_dma ? "DMA" : "non-DMA",
+                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
+                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA));
         }
     }
 
@@ -232,9 +251,10 @@ extern "C" int Lvgl_SetDisplayRotation(int degrees)
      * way, and a partial redraw would leave them on the panel. */
     lv_obj_invalidate(lv_display_get_screen_active(disp));
 
-    ESP_LOGI(TAG, "rotation -> %d deg via %s, scratch %u B, %u bands sent unrotated",
+    ESP_LOGI(TAG, "rotation -> %d deg via %s, scratch %u B (%s), %u bands sent unrotated",
              display_rotation, rotate_in_flush ? "flush transpose" : "lvgl matrix",
-             (unsigned)rotate_buf_size, rotate_fallbacks);
+             (unsigned)rotate_buf_size, rotate_buf_dma ? "DMA" : "non-DMA",
+             rotate_fallbacks);
 
     return display_rotation;
 }

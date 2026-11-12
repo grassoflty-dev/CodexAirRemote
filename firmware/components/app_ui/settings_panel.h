@@ -7,17 +7,21 @@
 /*
  * "Function settings" panel (settings_panel.c).
  *
- * A full screen overlay with a sheet that slides in from the top. It is opened
- * by a downward swipe that starts in the top hot zone of the NORMAL page (never
- * the standby page) and it is closed by tapping outside the sheet. While it is
- * open it holds app_busy(APP_BUSY_SETTINGS), so the 60 s idle -> standby timer
- * does not run; closing it releases the hold and the countdown starts over.
+ * A full screen (480x480, opaque) page that drops in from the top of the NORMAL
+ * page. Open: downward swipe starting in the top hot zone (never on the standby
+ * page). Close: swipe up from the bottom, the close button, or a tap on empty
+ * space. While it is open it holds app_busy(APP_BUSY_SETTINGS), so the 60 s
+ * idle -> standby timer does not run; closing it releases the hold and the
+ * countdown starts over.
  *
- * Contents: a brightness slider (5..100 %, step 5, shared with the standby page
- * through app_ui_set_brightness()) and a rotate button (90 degrees
- * counter-clockwise per press, through board_display_rotation_set()).
+ * Contents: a brightness area on the right (x 300..456, y 90..410: the whole
+ * rectangle is the hit area, the value follows the finger's absolute y in 5 %
+ * steps and is shared with the standby page through app_ui_set_brightness())
+ * and a ROTATE button (90 degrees counter-clockwise per press, through
+ * board_display_rotation_set()).
  *
- * Both values live in RAM only: nothing here reads or writes NVS.
+ * The widgets are built lazily on the first open, then reused. Both values live
+ * in RAM only: nothing here reads or writes NVS.
  */
 
 /* Create the panel on `screen` and hook the swipe gesture on `indev` (may be
