@@ -223,39 +223,58 @@ static bool standby_hold(void)
     return app_busy_active();
 }
 
-/* 待机页字形自检：逐个确认字体度量非零、A8 资源尺寸与度量一致、资源里真有非零
- * 像素。返回 1 表示 11 个字形全部可用；日志里逐字形打印度量与像素数。 */
+/* 待机页字形自检：把每个 A8 资源与字体原始 4bpp 数据逐像素比对（字体 fmt_txt 的
+ * 行是连续打包的，位偏移 (y*box_w + x)*4，等价于 lv_font_get_glyph_bitmap 的结果），
+ * 同时校验「stride == box_w」这个资源不变量。任何差异都会打 E GLYPH MISMATCH，
+ * 返回 1 仅当 11 个字形全部逐字节一致 —— 这样"画的是不是对的字"不再靠人眼。 */
 static int standby_font_check(void)
 {
-    lv_font_glyph_dsc_t dsc;
+    const lv_font_fmt_txt_dsc_t *fdsc = (const lv_font_fmt_txt_dsc_t *)ui_font_standby_160.dsc;
     char report[320];
     size_t used = 0;
     int complete = 1;
 
     report[0] = 0;
+    if (fdsc == NULL) return 0;
     for (uint32_t glyph = '0'; glyph <= ':'; glyph++) {
         const lv_image_dsc_t *image = standby_glyph_image((char)glyph);
-        bool present = image != NULL &&
-                       lv_font_get_glyph_dsc(&ui_font_standby_160, &dsc, glyph, 0) &&
-                       dsc.box_w > 0 && dsc.box_h > 0 && dsc.adv_w > 0 &&
-                       (int32_t)image->header.w == dsc.box_w && (int32_t)image->header.h == dsc.box_h;
-        unsigned ink = 0;
+        const lv_font_fmt_txt_glyph_dsc_t *gdsc = &fdsc->glyph_dsc[1 + (glyph - '0')];
+        const uint8_t *source;
+        unsigned mismatch = 0;
+        unsigned total;
         int written;
-        if (present) {
-            for (uint32_t i = 0; i < image->data_size; i++) {
-                if (image->data[i] != 0) ink++;
+
+        if (image == NULL || (int32_t)image->header.w != gdsc->box_w ||
+            (int32_t)image->header.h != gdsc->box_h ||
+            (int32_t)image->header.stride != gdsc->box_w) {
+            complete = 0;
+            written = snprintf(report + used, sizeof(report) - used, " '%c':BAD", (char)glyph);
+        } else {
+            total = (unsigned)(gdsc->box_w * gdsc->box_h);
+            source = &fdsc->glyph_bitmap[gdsc->bitmap_index];
+            for (uint32_t y = 0; y < gdsc->box_h; y++) {
+                for (uint32_t x = 0; x < gdsc->box_w; x++) {
+                    uint32_t bit = (y * gdsc->box_w + x) * 4;
+                    uint8_t packed = source[bit >> 3];
+                    uint8_t nibble = (bit & 7) == 0 ? (uint8_t)(packed >> 4) : (uint8_t)(packed & 0x0F);
+                    uint8_t expected = (uint8_t)(nibble * 17);
+                    if (image->data[y * image->header.stride + x] != expected) mismatch++;
+                }
             }
-            if (ink == 0) present = false;
+            if (mismatch != 0) {
+                complete = 0;
+                ESP_LOGE(TAG, "GLYPH MISMATCH '%c' px=%u of %u (%u.%02u%%)", (char)glyph, mismatch,
+                         total, (unsigned)(mismatch * 100u / total),
+                         (unsigned)(mismatch * 10000u / total % 100u));
+            }
+            written = snprintf(report + used, sizeof(report) - used, " '%c':%u/%u", (char)glyph,
+                               mismatch, total);
         }
-        if (!present) complete = 0;
-        written = snprintf(report + used, sizeof(report) - used, "%s '%c':%dx%d ink=%u",
-                           present ? "" : " [BAD]", (char)glyph, present ? dsc.box_w : 0,
-                           present ? dsc.box_h : 0, ink);
         if (written < 0) break;
         used += (size_t)written;
         if (used >= sizeof(report) - 1) break;
     }
-    ESP_LOGI(TAG, "standby: glyphs%s", report);
+    ESP_LOGI(TAG, "standby: glyphs vs font%s", report);
 
     return complete;
 }
