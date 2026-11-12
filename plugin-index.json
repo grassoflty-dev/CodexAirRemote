@@ -56,12 +56,12 @@
       },
       "versions": [
         {
-          "version": "0.4.0",
-          "publishTimestamp": 1794487323,
+          "version": "0.4.1",
+          "publishTimestamp": 1794489254,
           "source": {
             "type": "git",
             "url": "https://github.com/grassoflty-dev/CodexAirRemote",
-            "commit": "08ea44003378e09e16bd80c2587f0941cc3efd41",
+            "commit": "751960e73f338fcaacc219e5794ba97c64219089",
             "path": "plugins/dsh-airremote"
           },
           "engines": {
