@@ -5,7 +5,7 @@
 
 - 仓库：<https://github.com/grassoflty-dev/CodexAirRemote>（**public**）
 - 插件目录：`plugins/dsh-airremote`
-- 插件版本：`0.4.0`；内置固件：`0.6.0`（`plugins/dsh-airremote/firmware/manifest.json`）
+- 插件版本：`0.4.1`；内置固件：`0.6.1`（`plugins/dsh-airremote/firmware/manifest.json`）
 - 授权：插件 MIT，仓库与固件 Apache-2.0（见 `LICENSE` / `firmware/LICENSE`）
 
 ## 1. 前置条件
