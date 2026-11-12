@@ -340,6 +340,20 @@ esp_err_t rtc_board_set_unix(int64_t unix_seconds)
     ESP_LOGI(TAG, "RTC set to %04d-%02d-%02d %02d:%02d:%02d UTC, unix %lld",
              when.tm_year + 1900, when.tm_mon + 1, when.tm_mday, when.tm_hour, when.tm_min,
              when.tm_sec, (long long)unix_seconds);
+    /* 写完回读：确认寄存器真的写进去了，并确认 STOP/OS 没被置位（秒不动 = STOP=1）。 */
+    struct tm check;
+    uint8_t control_1_after = 0xFF;
+    uint8_t seconds_after = 0xFF;
+    if (rtc_read(RTC_REG_CONTROL_1, &control_1_after, 1) != ESP_OK) control_1_after = 0xFF;
+    if (rtc_read(RTC_REG_SECONDS, &seconds_after, 1) != ESP_OK) seconds_after = 0xFF;
+    if (read_fields(&check) == ESP_OK) {
+        ESP_LOGI(TAG, "RTC readback %04d-%02d-%02d %02d:%02d:%02d UTC, control_1=0x%02x (STOP=%d), "
+                 "seconds=0x%02x (OS=%d)", check.tm_year + 1900, check.tm_mon + 1, check.tm_mday,
+                 check.tm_hour, check.tm_min, check.tm_sec, control_1_after,
+                 (control_1_after >> 5) & 1, seconds_after, (seconds_after >> 7) & 1);
+    } else {
+        ESP_LOGE(TAG, "RTC readback failed, control_1=0x%02x", control_1_after);
+    }
     return ESP_OK;
 }
 
