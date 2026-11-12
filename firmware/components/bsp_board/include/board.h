@@ -31,6 +31,15 @@ esp_err_t board_audio_init(void);
 /* LVGL display created by board_init(), or NULL while unavailable. */
 lv_display_t *board_display(void);
 
+/* Screen orientation in 90 degree steps: 0/90/180/270, every step turns the
+ * whole UI 90 degrees counter-clockwise. It is a display level rotation, so it
+ * applies to both the normal page and the standby page at once and survives
+ * page switches. RAM only: no NVS read or write, a power cycle is back at 0.
+ * Returns the rotation that is actually applied. Call with the LVGL lock held
+ * (app_ui calls it from the settings panel's button callback). */
+int board_display_rotation_set(int degrees);
+int board_display_rotation(void);
+
 /* LVGL adapter lock (recursive use from tasks is not required). */
 bool board_lock(int timeout_ms);
 void board_unlock(void);

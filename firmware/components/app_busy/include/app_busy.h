@@ -23,6 +23,9 @@ typedef enum {
                                  * terminal state (recording, upload, result) */
     APP_BUSY_GYRO = 1u << 1,    /* gyro/mouse runtime, calibration included */
     APP_BUSY_CONSOLE = 1u << 2, /* blocking console command (time set, ...) */
+    APP_BUSY_SETTINGS = 1u << 3, /* function settings panel is open: the user is
+                                 * editing the board itself, so the idle timer
+                                 * must not switch to the standby page */
 } app_busy_t;
 
 void app_busy_acquire(app_busy_t who);

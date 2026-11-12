@@ -84,6 +84,16 @@ extern "C" lv_display_t *board_display(void)
     return lv_display_get_default();
 }
 
+extern "C" int board_display_rotation_set(int degrees)
+{
+    return Lvgl_SetDisplayRotation(degrees);
+}
+
+extern "C" int board_display_rotation(void)
+{
+    return Lvgl_GetDisplayRotation();
+}
+
 extern "C" bool board_lock(int timeout_ms)
 {
     return Lvgl_lock(timeout_ms) == ESP_OK;

@@ -14,6 +14,7 @@ static const char *holder_name(unsigned who)
     case APP_BUSY_VOICE: return "voice";
     case APP_BUSY_GYRO: return "gyro";
     case APP_BUSY_CONSOLE: return "console";
+    case APP_BUSY_SETTINGS: return "settings";
     default: return "?";
     }
 }

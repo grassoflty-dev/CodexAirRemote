@@ -15,6 +15,7 @@
 #include "esp_timer.h"
 #include "lvgl_private.h"
 #include "rtc_board.h"
+#include "settings_panel.h"
 #include "standby_glyphs.h"
 #include "voice.h"
 
@@ -37,21 +38,28 @@ static bool mouse_active, mouse_ready, voice_ready, ble_ready;
  * gone, so nothing sits at the bottom of the screen unless something happened. */
 static const char *mouse_message = "";
 static uint32_t mouse_message_until;
-static uint32_t last_interaction, last_battery_update, last_clock_update;
+static uint32_t last_battery_update, last_clock_update;
 /* Set by app_ui_refresh_clock() after the host changes the time, so the next
  * render tick (<= 125 ms) repaints instead of waiting for the 1 s cadence. */
 static volatile bool clock_dirty = true;
+/* Last value actually written to the panel (apply_brightness() only writes on a
+ * change). -1 = nothing written yet. */
 static int brightness = -1;
+/* Unified user brightness: one RAM value (percent) for the normal page and the
+ * standby page. The settings panel is the only writer. RAM only, so a power
+ * cycle always comes back at UI_BRIGHTNESS_DEFAULT. */
+#define UI_BRIGHTNESS_DEFAULT 60
+static int ui_brightness = UI_BRIGHTNESS_DEFAULT;
 
 /* Standby page: after a minute without any interaction the panel goes black
- * with just the wall clock and the backlight drops to
- * UI_STANDBY_BRIGHTNESS_PERCENT. Every input source calls note_activity();
+ * with just the wall clock. Every input source calls note_activity();
  * long-lived features hold the board through app_busy instead of adding their
- * own exception here. */
+ * own exception here.
+ *
+ * Brightness is not part of this: the standby page and the normal page share
+ * ui_brightness, so entering or leaving standby only shows/hides the page and
+ * never touches the backlight. */
 #define UI_STANDBY_IDLE_MS 60000
-#define UI_STANDBY_BRIGHTNESS_PERCENT 80
-#define UI_BRIGHTNESS_ACTIVE 100
-#define UI_BRIGHTNESS_IDLE 60
 
 /* 待机页第一行是五个固定字形格（H H : M M）。数字在每个格内按字体度量
  * （adv_w / ofs_x / ofs_y / box_w / box_h）居中，视觉位置与字体渲染一致；
@@ -78,7 +86,6 @@ static const int standby_cell_w[5] = {STANDBY_DIGIT_W, STANDBY_DIGIT_W,
 static lv_indev_t *touch_indev;
 static bool standby_active;
 static volatile uint32_t last_activity;
-static int standby_brightness = UI_BRIGHTNESS_IDLE;
 static voice_state_t last_voice_seen = VOICE_IDLE;
 /* Set by the console test hook (app_ui.h) and consumed in render(). */
 static volatile bool standby_tap_request;
@@ -144,7 +151,7 @@ static void set_message(const char *text)
 
 static void mouse_clicked(lv_event_t *event)
 {
-    last_interaction = lv_tick_get();
+    note_activity();
     if (voice_busy(voice_state())) return;
     if (mouse_active) {
         mouse_stop();
@@ -159,7 +166,7 @@ static void mouse_clicked(lv_event_t *event)
 
 static void voice_clicked(lv_event_t *event)
 {
-    last_interaction = lv_tick_get();
+    note_activity();
     if (mouse_active || voice_busy(voice_state())) return;
     set_message(voice_ready && voice_start() == ESP_OK ? "" : "PC voice unavailable");
 }
@@ -169,7 +176,7 @@ static void action_touch(lv_event_t *event)
     lv_event_code_t code = lv_event_get_code(event);
     bool a = lv_event_get_target(event) == a_button;
     if (code == LV_EVENT_PRESSED || code == LV_EVENT_SHORT_CLICKED) {
-        last_interaction = lv_tick_get();
+        note_activity();
         ESP_LOGI(TAG, "ui: %s touch, code %d", a ? "A" : "B", (int)code);
     }
     if (mouse_active) {
@@ -218,10 +225,33 @@ static void apply_brightness(int requested)
     if (requested != brightness && board_set_brightness(requested) == ESP_OK) brightness = requested;
 }
 
+/* Public brightness model (app_ui.h). Both pages read the same value, so there
+ * is no per-page level anymore: the settings panel slider is the only writer and
+ * the change is applied to the panel immediately (not on the next render tick)
+ * so dragging the slider feels continuous. The value lives in RAM only. */
+int app_ui_brightness(void)
+{
+    return ui_brightness;
+}
+
+void app_ui_set_brightness(int percent)
+{
+    if (percent < 5) percent = 5;
+    if (percent > 100) percent = 100;
+    ui_brightness = percent;
+    apply_brightness(ui_brightness);
+}
+
+void app_ui_note_activity(void)
+{
+    note_activity();
+}
+
 /* The board counts as "in use" while any long-lived feature holds it: a voice
- * session from start to its terminal state, the gyro/mouse runtime, and
- * blocking console commands. Those holds live in app_busy so a new feature
- * only has to acquire/release there instead of patching the standby timer. */
+ * session from start to its terminal state, the gyro/mouse runtime, blocking
+ * console commands and the open settings panel. Those holds live in app_busy so a
+ * new feature only has to acquire/release there instead of patching the standby
+ * timer. */
 static bool standby_hold(void)
 {
     return app_busy_active();
@@ -437,7 +467,6 @@ static int page_covers(lv_obj_t *button)
 static void enter_standby(void)
 {
     standby_active = true;
-    standby_brightness = brightness > 0 ? brightness : UI_BRIGHTNESS_IDLE;
     lv_obj_move_to_index(standby_page, -1); /* keep it above hint_panel/status */
     lv_obj_set_hidden(standby_page, false);
     /* 电量标签是主界面那一个控件，直接挂到待机页上：同一套文本、字体与边距，
@@ -447,10 +476,10 @@ static void enter_standby(void)
     update_standby_clock(true);
     /* The page is opaque, topmost and clickable, so a wake tap lands on it.
      * The cover flags are the geometry proof for the hardware test. */
-    ESP_LOGI(TAG, "standby: enter, idle %u ms, brightness %d -> %d, busy 0x%x, "
+    ESP_LOGI(TAG, "standby: enter, idle %u ms, brightness %d (unchanged), busy 0x%x, "
              "ble=%d gen=%u, page top=%d/%d covers voice=%d gyro=%d a=%d b=%d",
-             (unsigned)lv_tick_elaps(last_activity), standby_brightness,
-             UI_STANDBY_BRIGHTNESS_PERCENT, app_busy_mask(), ble_mouse_connected() ? 1 : 0,
+             (unsigned)lv_tick_elaps(last_activity), ui_brightness,
+             app_busy_mask(), ble_mouse_connected() ? 1 : 0,
              ble_mouse_generation(), (int)lv_obj_get_index(standby_page),
              (int)lv_obj_get_child_count(lv_obj_get_parent(standby_page)),
              page_covers(voice_button), page_covers(gyro_button), page_covers(a_button),
@@ -483,12 +512,10 @@ static void leave_standby(const char *why)
     /* 电量标签挂回主屏幕原来的右上角位置（边距与主界面一致）。 */
     lv_obj_set_parent(battery_label, main_screen);
     lv_obj_align(battery_label, LV_ALIGN_TOP_RIGHT, STANDBY_BATTERY_X, STANDBY_BATTERY_Y);
-    /* Back to the level the panel had before the page took over (60% in the
-     * steady state) instead of a hard-coded 100; the render policy keeps owning
-     * the 25 s idle step from there. */
-    if (board_set_brightness(standby_brightness) == ESP_OK) brightness = standby_brightness;
+    /* The backlight is not touched here: the standby page and the normal page
+     * share ui_brightness, so waking only unhides the main page. */
     clock_dirty = true;
-    ESP_LOGI(TAG, "standby: wake (%s), brightness %d, ble=%d gen=%u", why, standby_brightness,
+    ESP_LOGI(TAG, "standby: wake (%s), brightness %d, ble=%d gen=%u", why, ui_brightness,
              ble_mouse_connected() ? 1 : 0, ble_mouse_generation());
 }
 
@@ -523,6 +550,14 @@ static void force_standby_step(void)
     {
         voice_finish(VOICE_ACTION_CANCEL);
         ESP_LOGI(TAG, "standby: key cancels voice session (state %d)", (int)voice);
+    }
+    /* The settings panel holds app_busy while it is open, so it has to be closed
+     * here: otherwise the third key would wait for a hold that only the panel
+     * itself could release. Closing it is also what the user expects. */
+    if (settings_panel_is_open())
+    {
+        settings_panel_close();
+        ESP_LOGI(TAG, "standby: key closed the settings panel");
     }
     if (app_busy_active())
     {
@@ -627,17 +662,23 @@ static void render(lv_timer_t *timer)
         }
     }
 
+    /* One brightness for both pages: the user value from the settings panel
+     * (60 by default). apply_brightness() only writes when it really changed, so
+     * this is a cheap no-op per tick, and neither the standby page nor the idle
+     * countdown owns a level of its own anymore. */
+    apply_brightness(ui_brightness);
+
     if (standby_active) {
         if (standby_hold()) {
             leave_standby("feature busy");
         } else {
             update_standby_clock(false);
-            apply_brightness(UI_STANDBY_BRIGHTNESS_PERCENT);
             return; /* the page hides every other widget; nothing else to draw */
         }
     } else if (standby_hold()) {
-        /* A voice session, the gyro runtime or a console command owns the
-         * board: no countdown runs, and it starts over once the hold ends. */
+        /* A voice session, the gyro runtime, a console command or the open
+         * settings panel owns the board: no countdown runs, and it starts over
+         * once the hold ends. */
         note_activity();
     } else if (lv_tick_elaps(last_activity) >= UI_STANDBY_IDLE_MS) {
         enter_standby();
@@ -718,17 +759,6 @@ static void render(lv_timer_t *timer)
     } else {
         lv_obj_add_state(b_button, LV_STATE_DISABLED);
     }
-
-    /* Keep the panel bright: at the old idle level a dark UI reads as "dead".
-     * Full brightness while the user interacts, 60% once it has been idle for
-     * 25 s, and always full for the first 5 s after boot. The standby page has
-     * its own (dimmer) level; see enter_standby(). */
-    static uint32_t boot_tick;
-    uint32_t now = lv_tick_get();
-    if (boot_tick == 0) boot_tick = now;
-    bool active = mouse_active || recording_mode || lv_tick_elaps(last_interaction) < 25000;
-    int requested = (active || now - boot_tick < 5000) ? UI_BRIGHTNESS_ACTIVE : UI_BRIGHTNESS_IDLE;
-    apply_brightness(requested);
 }
 
 static lv_obj_t *make_button(lv_obj_t *parent, int x, int y, uint32_t color)
@@ -1018,8 +1048,14 @@ bool app_ui_init(lv_display_t *display)
     }
     if (!touch_indev) ESP_LOGW(TAG, "no pointer input device: standby wake by touch disabled");
 
-    last_interaction = lv_tick_get();
-    last_activity = last_interaction;
+    /* Function settings panel (settings_panel.c): top swipe gesture, brightness
+     * slider and the rotate button. Created after the standby page so its
+     * overlay can be raised above everything else when it opens; it is hidden at
+     * boot and only holds app_busy while it is open. */
+    settings_panel_init(screen, display, touch_indev);
+
+    note_activity();
+    last_activity = lv_tick_get();
     /* 上电/复位后一律进主界面：待机只由「60 s 空闲」或「第三键短按」触发，
      * 不恢复任何上次状态（本工程也没有把待机状态写进 NVS）。 */
     standby_active = false;
@@ -1027,7 +1063,8 @@ bool app_ui_init(lv_display_t *display)
     standby_request = false;
     standby_wake_request = false;
     lv_obj_set_hidden(standby_page, true);
-    ESP_LOGI(TAG, "standby: boot into main UI, idle timer starts now (brightness %d)", brightness);
+    ESP_LOGI(TAG, "standby: boot into main UI, idle timer starts now (brightness %d)",
+             ui_brightness);
     lv_timer_create(render, 125, NULL);
     render(NULL);
     /* 侧边第三键（KEY，GPIO10）：短按/长按都只回调一次，回调里只置请求位，

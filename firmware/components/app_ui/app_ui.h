@@ -25,6 +25,18 @@ void app_ui_refresh_clock(void);
 /* True while the black standby page with the big clock is showing. */
 bool app_ui_standby_active(void);
 
+/* Unified RAM brightness, percent in 5..100 (default 60). One value for the
+ * normal page AND the standby page: entering/leaving standby no longer changes
+ * it. RAM only, never written to NVS. app_ui_set_brightness() applies it to the
+ * panel immediately (only writing when the value really changed). Must be
+ * called with the LVGL lock held. */
+int app_ui_brightness(void);
+void app_ui_set_brightness(int percent);
+
+/* Restart the 60 s idle countdown. Any UI interaction calls it; the settings
+ * panel calls it for its own widgets. */
+void app_ui_note_activity(void);
+
 /* 立即进入待机页（侧边第三键短按、以及任何需要强制息屏的调用方）。
  * 可从任意任务调用：先安全停掉占用方（陀螺仪鼠标、语音会话）并等 app_busy
  * 真正释放，再由渲染 tick 在 LVGL 上下文里切页；已处于待机时则改为唤醒。
