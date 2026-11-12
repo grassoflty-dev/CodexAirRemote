@@ -33,6 +33,9 @@ void rtc_board_time_text(char *out, size_t size);
 /* Write "YYYY/MM/DD" into out; "----/--/--" while no valid time source exists. */
 void rtc_board_date_text(char *out, size_t size);
 
+/* Current local second (0..59), or -1 while no valid time source exists. */
+int rtc_board_second(void);
+
 /* Apply a UTC unix timestamp: stores it in the RTC backup domain (so the clock
  * keeps running across power-off) and in the system clock (so time() agrees). */
 esp_err_t rtc_board_set_unix(int64_t unix_seconds);

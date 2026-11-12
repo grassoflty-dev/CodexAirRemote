@@ -290,6 +290,19 @@ void rtc_board_date_text(char *out, size_t size)
     }
     snprintf(out, size, "%04d/%02d/%02d", now.tm_year + 1900, now.tm_mon + 1, now.tm_mday);
 }
+/* PCF85063A holds UTC; the display offset is applied by current_local(). */
+int rtc_board_second(void)
+{
+    struct tm now;
+
+    if (!current_local(&now))
+    {
+        return -1;
+    }
+
+    return now.tm_sec;
+}
+
 
 esp_err_t rtc_board_set_unix(int64_t unix_seconds)
 {
