@@ -1013,12 +1013,21 @@ bool app_ui_init(lv_display_t *display)
         if (!touch_indev && lv_indev_get_type(indev) == LV_INDEV_TYPE_POINTER) {
             touch_indev = indev;
             lv_indev_add_event_cb(indev, touch_pressed, LV_EVENT_PRESSED, NULL);
+            lv_indev_add_event_cb(indev, touch_pressed, LV_EVENT_CLICKED, NULL);
         }
     }
     if (!touch_indev) ESP_LOGW(TAG, "no pointer input device: standby wake by touch disabled");
 
     last_interaction = lv_tick_get();
     last_activity = last_interaction;
+    /* 上电/复位后一律进主界面：待机只由「60 s 空闲」或「第三键短按」触发，
+     * 不恢复任何上次状态（本工程也没有把待机状态写进 NVS）。 */
+    standby_active = false;
+    standby_force_pending = false;
+    standby_request = false;
+    standby_wake_request = false;
+    lv_obj_set_hidden(standby_page, true);
+    ESP_LOGI(TAG, "standby: boot into main UI, idle timer starts now (brightness %d)", brightness);
     lv_timer_create(render, 125, NULL);
     render(NULL);
     /* 侧边第三键（KEY，GPIO10）：短按/长按都只回调一次，回调里只置请求位，
