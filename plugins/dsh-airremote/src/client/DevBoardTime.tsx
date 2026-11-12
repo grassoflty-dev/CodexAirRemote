@@ -1,34 +1,5 @@
 import { useCallback, useEffect, useId, useState } from 'react'
-
-/**
- * Timezone table shared with the host routes (see README.md「开发板时间」).
- * `auto` follows the browser clock; every other row pins the offset the board
- * must display. Minutes are east-positive, matching `AR1Z <minutes>`.
- */
-export interface TimezoneOption {
-  id: string
-  label: string
-  minutes?: number
-}
-
-export const TIMEZONE_OPTIONS: readonly TimezoneOption[] = [
-  { id: 'auto', label: '跟随系统' },
-  { id: 'utc-8', label: 'UTC−8 洛杉矶', minutes: -480 },
-  { id: 'utc-5', label: 'UTC−5 纽约', minutes: -300 },
-  { id: 'utc+0', label: 'UTC+0 伦敦', minutes: 0 },
-  { id: 'utc+1', label: 'UTC+1 柏林', minutes: 60 },
-  { id: 'utc+8', label: 'UTC+8 北京', minutes: 480 },
-  { id: 'utc+9', label: 'UTC+9 东京', minutes: 540 }
-]
-
-const DEFAULT_TIMEZONE = 'auto'
-
-/** Resolve a stored id to the offset the board expects (east positive). */
-export function minutesForTimezone(id: string): number {
-  const option = TIMEZONE_OPTIONS.find((candidate) => candidate.id === id)
-  if (option?.minutes !== undefined) return option.minutes
-  return -new Date().getTimezoneOffset()
-}
+import { DEFAULT_TIMEZONE, TIMEZONE_OPTIONS, minutesForTimezone } from '../time-zones.js'
 
 /** Human reason for a failed sync; unknown codes fall back to the host message. */
 export function syncFailureText(error: string | undefined, message: string | undefined): string {
@@ -51,6 +22,7 @@ export function syncFailureText(error: string | undefined, message: string | und
 interface TimePreferenceResponse {
   ok?: boolean
   timezone?: string
+  autoSync?: boolean
   updatedAt?: string | null
   message?: string
 }
@@ -86,14 +58,18 @@ function formatLocalTime(unix: number): string {
 
 /**
  * Settings section: the board keeps UTC in its RTC, the display offset lives in
- * NVS. Picking a zone only persists the choice; a serial round-trip happens on
- * the explicit button press — never on mount, never on a poll.
+ * NVS. Picking a zone only persists the choice. A serial round-trip happens on
+ * the explicit button press, or automatically on host startup / board session
+ * when 「自动对时」 is on (the default); this panel never polls.
  */
 export function DevBoardTime() {
   const selectId = useId()
+  const autoSyncId = useId()
   const [timezone, setTimezone] = useState(DEFAULT_TIMEZONE)
+  const [autoSync, setAutoSync] = useState(true)
   const [status, setStatus] = useState<StatusLine | null>(null)
   const [saving, setSaving] = useState(false)
+  const [savingAutoSync, setSavingAutoSync] = useState(false)
   const [syncing, setSyncing] = useState(false)
 
   useEffect(() => {
@@ -109,9 +85,11 @@ export function DevBoardTime() {
           setTimezone(DEFAULT_TIMEZONE)
           setStatus({ tone: 'info', text: '读取已保存的时区失败，已回退到「跟随系统」' })
         }
+        setAutoSync(data.autoSync !== false)
       } catch {
         if (!alive) return
         setTimezone(DEFAULT_TIMEZONE)
+        setAutoSync(true)
         setStatus({ tone: 'info', text: '读取已保存的时区失败，已回退到「跟随系统」' })
       }
     })()
@@ -140,6 +118,33 @@ export function DevBoardTime() {
         setStatus({ tone: 'error', text: '保存失败（无法连接本地服务）' })
       } finally {
         setSaving(false)
+      }
+    })()
+  }, [])
+
+  const handleAutoSyncChange = useCallback((next: boolean) => {
+    setAutoSync(next)
+    setSavingAutoSync(true)
+    setStatus(null)
+    void (async () => {
+      try {
+        const { status: httpStatus, data } = await requestJson<TimePreferenceResponse>('/airremote/time', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ autoSync: next })
+        })
+        if (httpStatus === 200 && data.ok !== false) {
+          setAutoSync(data.autoSync !== false)
+          setStatus({ tone: 'ok', text: next ? '已开启自动对时' : '已关闭自动对时' })
+        } else {
+          setAutoSync(!next)
+          setStatus({ tone: 'error', text: data.message ?? '保存失败' })
+        }
+      } catch {
+        setAutoSync(!next)
+        setStatus({ tone: 'error', text: '保存失败（无法连接本地服务）' })
+      } finally {
+        setSavingAutoSync(false)
       }
     })()
   }, [])
@@ -208,6 +213,24 @@ export function DevBoardTime() {
         >
           {syncing ? '同步中…' : '同步到开发板'}
         </button>
+      </div>
+      <label
+        htmlFor={autoSyncId}
+        style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', cursor: 'pointer' }}
+      >
+        <input
+          id={autoSyncId}
+          type="checkbox"
+          checked={autoSync}
+          disabled={savingAutoSync}
+          onChange={(event) => handleAutoSyncChange(event.target.checked)}
+          style={{ accentColor: 'inherit', margin: 0 }}
+        />
+        自动对时（连上开发板就校准时间）
+      </label>
+      <div style={{ fontSize: '11px', lineHeight: 1.5, opacity: 0.6 }}>
+        默认开启：插件启动和每次连接开发板时，按上面选的时区把 host 时间写进板子。关闭后只有点「同步到开发板」
+        才会写时间。
       </div>
       {status === null ? null : (
         <div

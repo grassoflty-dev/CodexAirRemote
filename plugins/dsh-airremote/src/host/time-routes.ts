@@ -1,18 +1,24 @@
 /**
  * 「开发板时间」的 HTTP 路由（contract: `/airremote/time`、`/airremote/sync-time`）。
  *
- * - `GET  /airremote/time`  读保存的时区选择
- * - `POST /airremote/time`  存时区选择
+ * - `GET  /airremote/time`  读保存的时区选择与自动对时开关
+ * - `POST /airremote/time`  存时区选择 / 自动对时开关（可只传其中一项）
  * - `POST /airremote/sync-time` 用串口把 host 当前时间 + 分钟偏移写给板子
  *
- * 只在有人点击时动作：没有定时器、没有轮询、没有插拔监听。
- * 同一时刻只允许一次同步，第二次直接回 `busy`。
+ * 这几条路由只在有人点击时动作：没有定时器、没有轮询、没有插拔监听。
+ * 自动对时是另一边 `AutoTimeSync` 的事，两边通过共享的 `SyncGate` 保证同一时刻只同步一次。
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { BoardSyncError, findBoardPort, syncBoardTime, type BoardSyncErrorCode } from './serial-port.js'
 import type { SerialHolder } from './serial-holder.js'
-import { isTimezoneId, readTimePreference, writeTimePreference } from './time-settings.js'
+import type { SyncGate } from './sync-gate.js'
+import {
+  isTimezoneId,
+  readTimePreference,
+  writeTimePreference,
+  type TimePreferencePatch
+} from './time-settings.js'
 
 /** 请求体上限；两个 POST 的载荷都是几十字节，4 KB 足够并挡住放大攻击。 */
 const MAX_BODY_BYTES = 4096
@@ -28,6 +34,8 @@ export interface TimeRouteOptions {
   serialPort: string
   /** 串口锁：浏览器烧录时占着 `flash`，这里同步前必须抢到 `sync`。 */
   serialHolder?: SerialHolder
+  /** 与自动对时共享的「一次只同步一次」闸门；不传则只靠自身的 `syncing` 标记。 */
+  gate?: SyncGate
   /** 正常事件（如一次成功的同步）。 */
   log?: (message: string) => void
   /** 异常事件；不抛错，只记录。 */
@@ -108,9 +116,18 @@ export class TimeRoutes {
 
   private sendPreference(res: ServerResponse): void {
     const preference = readTimePreference(this.options.dataDir)
-    this.sendJson(res, 200, { ok: true, timezone: preference.timezone, updatedAt: preference.updatedAt })
+    this.sendJson(res, 200, {
+      ok: true,
+      timezone: preference.timezone,
+      autoSync: preference.autoSync,
+      updatedAt: preference.updatedAt
+    })
   }
 
+  /**
+   * `POST /airremote/time`：`{timezone?}` 与 `{autoSync?}` 至少给一个，
+   * 只改给出的字段，另一个沿用文件里的值。
+   */
   private async savePreference(req: IncomingMessage, res: ServerResponse): Promise<void> {
     let body: unknown
     try {
@@ -119,8 +136,21 @@ export class TimeRoutes {
       this.badRequest(res, error)
       return
     }
-    const timezone = body !== null && typeof body === 'object' ? (body as { timezone?: unknown }).timezone : undefined
-    if (!isTimezoneId(timezone)) {
+    if (body === null || typeof body !== 'object') {
+      this.badRequest(res, new BadRequestError('请求体必须是 JSON 对象'))
+      return
+    }
+    const timezone = (body as { timezone?: unknown }).timezone
+    const autoSync = (body as { autoSync?: unknown }).autoSync
+    if (timezone === undefined && autoSync === undefined) {
+      this.sendJson(res, 400, {
+        ok: false,
+        error: 'bad-request',
+        message: 'timezone 与 autoSync 至少要给一个'
+      })
+      return
+    }
+    if (timezone !== undefined && !isTimezoneId(timezone)) {
       this.sendJson(res, 400, {
         ok: false,
         error: 'bad-request',
@@ -128,12 +158,24 @@ export class TimeRoutes {
       })
       return
     }
+    if (autoSync !== undefined && typeof autoSync !== 'boolean') {
+      this.sendJson(res, 400, { ok: false, error: 'bad-request', message: 'autoSync 必须是布尔值' })
+      return
+    }
+    const patch: TimePreferencePatch = {}
+    if (timezone !== undefined) patch.timezone = timezone as string
+    if (autoSync !== undefined) patch.autoSync = autoSync as boolean
     try {
-      const saved = writeTimePreference(this.options.dataDir, timezone)
-      this.sendJson(res, 200, { ok: true, timezone: saved.timezone, updatedAt: saved.updatedAt })
+      const saved = writeTimePreference(this.options.dataDir, patch)
+      this.sendJson(res, 200, {
+        ok: true,
+        timezone: saved.timezone,
+        autoSync: saved.autoSync,
+        updatedAt: saved.updatedAt
+      })
     } catch (error) {
-      this.options.warn?.(`airremote: 保存时区失败：${describe(error)}`)
-      this.sendJson(res, 200, { ok: false, error: 'internal', message: `保存时区失败：${describe(error)}` })
+      this.options.warn?.(`airremote: 保存时间设置失败：${describe(error)}`)
+      this.sendJson(res, 200, { ok: false, error: 'internal', message: `保存时间设置失败：${describe(error)}` })
     }
   }
 
@@ -182,7 +224,20 @@ export class TimeRoutes {
       })
       return
     }
+    /** 自动对时可能正用着串口：共享闸门抢不到就直接回 busy，不排队。 */
+    const gate = this.options.gate
+    if (gate !== undefined && !gate.tryEnter()) {
+      this.sendJson(res, 200, {
+        ok: false,
+        error: 'busy',
+        port: null,
+        lines: [],
+        message: '自动对时正在写入时间，请稍候再试'
+      })
+      return
+    }
     if (holder !== undefined && !holder.acquire('sync')) {
+      gate?.leave()
       this.sendJson(res, 200, {
         ok: false,
         error: 'busy',
@@ -193,6 +248,7 @@ export class TimeRoutes {
       return
     }
     const lockHeld = holder !== undefined
+    const gateHeld = gate !== undefined
 
     this.syncing = true
     /** host 的时钟，不用浏览器时间。 */
@@ -221,6 +277,7 @@ export class TimeRoutes {
     } finally {
       this.syncing = false
       if (lockHeld) holder?.release('sync')
+      if (gateHeld) gate?.leave()
     }
   }
 

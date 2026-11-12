@@ -3,6 +3,7 @@ import type {} from '@deepseek-ai/dsh-settings'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { fileURLToPath } from 'node:url'
 import { AudioRoute } from './host/audio-route.js'
+import { AutoTimeSync } from './host/auto-sync.js'
 import { BoardDiscovery } from './host/discovery.js'
 import { FakeBoard } from './host/fake-board.js'
 import { resolveHostConfig, simulatedToken, type AirRemoteHostConfigOverrides } from './host/config.js'
@@ -10,6 +11,7 @@ import { FirmwareRoutes } from './host/firmware-routes.js'
 import { FlashRoute } from './host/flash-route.js'
 import { findBoardPort } from './host/serial-port.js'
 import { SerialHolder, SerialRoutes } from './host/serial-holder.js'
+import { SyncGate } from './host/sync-gate.js'
 import { TimeRoutes } from './host/time-routes.js'
 
 /**
@@ -66,25 +68,59 @@ export async function apply(ctx: Context, config: AirRemoteHostConfigOverrides =
     }
   }
 
+  /**
+   * 串口锁 + 校时闸门：手动「同步到开发板」与自动对时共用，
+   * 保证同一时刻只有一个写串口的动作（烧录持有 `flash` 时两边都跳过）。
+   */
+  const serialHolder = new SerialHolder()
+  const syncGate = new SyncGate()
+
+  /**
+   * 自动对时：连上板子（WSS 音频路由被连上）或插件刚启动时，把 host 时间 + 设置里的时区
+   * 写进板子，不需要用户点按钮。排期在 `apply()` 末尾，只 setTimeout、不 await，
+   * 失败只记 warn，绝不影响插件加载。
+   */
+  const autoSync = new AutoTimeSync({
+    dataDir: resolved.dataDir,
+    serialPort: resolved.serialPort,
+    serialHolder,
+    gate: syncGate,
+    log: (message) => logger.info(message),
+    warn: (message) => logger.warn(message)
+  })
+
   const route = new AudioRoute({
     config: resolved,
     discovery,
     simulation,
     logger: (message) => logger.info(message)
   })
-  const disposeRoute = ctx.webServer.registerUpgrade({ path: '/airremote/audio', handler: route.handler })
+  /** 每次 WSS 音频路由被连上算一次「板子会话建立」，给自动对时一个去重键。 */
+  let audioSessions = 0
+  const disposeRoute = ctx.webServer.registerUpgrade({
+    path: '/airremote/audio',
+    handler: (req, socket, head) => {
+      audioSessions += 1
+      try {
+        autoSync.notifySession(String(audioSessions))
+      } catch {
+        /* 对时排期失败绝不能挡住音频握手 */
+      }
+      route.handler(req, socket, head)
+    }
+  })
 
   /**
-   * 开发板时间设置：GET/POST `/airremote/time` 读写时区偏好，
+   * 开发板时间设置：GET/POST `/airremote/time` 读写时区与自动对时开关，
    * POST `/airremote/sync-time` 把 host 当前时间与时区写进板子。
    * 路由只是「有人点按钮才动」的普通 HTTP handler，不带定时器；
    * 注册失败（旧版 webserver 没有 `register`）只告警，不能让插件加载失败。
    */
-  const serialHolder = new SerialHolder()
   const timeRoutes = new TimeRoutes({
     dataDir: resolved.dataDir,
     serialPort: resolved.serialPort,
     serialHolder,
+    gate: syncGate,
     log: (message) => logger.info(message),
     warn: (message) => logger.warn(message)
   })
@@ -187,8 +223,16 @@ export async function apply(ctx: Context, config: AirRemoteHostConfigOverrides =
       `simulate=${String(simulation !== undefined)} token=${resolved.pairingToken.length === 64 ? 'loaded' : 'missing'}`
   )
 
+  /** 只排期、不 await：定时器 `unref`，插件启动不会被一次串口往返拖住。 */
+  try {
+    autoSync.armStartup()
+  } catch (error) {
+    logger.warn(`airremote: 自动对时排期失败：${error instanceof Error ? error.message : String(error)}`)
+  }
+
   ctx.effect(() => {
     return () => {
+      autoSync.dispose()
       disposeTap?.()
       disposeFlashRoute?.()
       disposeRoute()

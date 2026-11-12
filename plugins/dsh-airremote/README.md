@@ -53,13 +53,21 @@ plugin_manager set_bundle      @deepseek-ai/dsh-experimental-voice-input-bundle 
 ## 开发板时间（时区设置）
 
 设置页 → **开发板时间**：一个时区下拉（跟随系统 / UTC−8 洛杉矶 / UTC−5 纽约 / UTC+0 伦敦 /
-UTC+1 柏林 / UTC+8 北京 / UTC+9 东京）加一个「同步到开发板」按钮。
+UTC+1 柏林 / UTC+8 北京 / UTC+9 东京）、一个「同步到开发板」按钮，以及一个默认勾选的
+**「自动对时（连上开发板就校准时间）」**开关。
 
-- 点「同步到开发板」时，host 才通过串口发两条命令：`AR1T <当前 UTC 秒>`（板载 RTC 只存 UTC）
+- 手动点「同步到开发板」时，host 通过串口发两条命令：`AR1T <当前 UTC 秒>`（板载 RTC 只存 UTC）
   和 `AR1Z <偏移分钟>`（东为正，480 = UTC+8，存 NVS 的 `airremote_time` / `tz_min`）。
   板子两条都回 `OK` 才算成功；回 `ERR` 或超时按错误码上报。
-- **只在点击时发生**：不监听 USB 插拔、不后台轮询、重连后也不自动补发。改下拉框只保存选择，
-  不碰串口。
+- **自动对时**（默认开）：插件 host 启动 4 秒后、以及每次板子会话建立（页面连上 WSS 音频路由
+  `/airremote/audio`）1.5 秒后，host 自己读 `time.json` 里的时区、算出分钟偏移，走同一套串口
+  命令把时间写进板子——不需要用户点按钮。时区**只取自设置**，不硬编码浏览器时区；选「跟随系统」
+  时用 host 运行环境的系统偏移（`-new Date().getTimezoneOffset()`）兜底。关掉开关后只剩手动按钮。
+- 自动对时的节流与容错：同一次启动 / 同一次连接最多尝试一次，失败**不重试**、只 `logger.warn`
+  一条「自动对时失败（不重试）…」；没找到板子、串口被烧录或手动同步占着、共享闸门正忙时
+  直接跳过（记一条 info），不算错误。整个过程异步且 `try/catch` 包裹，`apply()` 只 `setTimeout`
+  排期、**不 await**，所以串口慢或失败都不会拖慢 / 拖垮插件加载。
+- 改下拉框只保存选择，不碰串口；改开关也只写 `time.json`（下一次启动 / 连接才生效）。
 - 端口识别：按 USB VID `303A`（Espressif）找串口，优先用 `serialport` 包；不可用时回落到
   注册表 / PowerShell（`[System.IO.Ports.SerialPort]`）。要固定端口时设环境变量
   `AIRREMOTE_SERIAL_PORT=COM7`。
@@ -72,8 +80,8 @@ UTC+1 柏林 / UTC+8 北京 / UTC+9 东京）加一个「同步到开发板」�
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `/airremote/time` | 读取保存的时区选择 |
-| POST | `/airremote/time` | 保存时区选择 |
+| GET | `/airremote/time` | 读取保存的时区选择与自动对时开关 |
+| POST | `/airremote/time` | 保存时区选择 / 自动对时开关（可只传其中一项） |
 | POST | `/airremote/sync-time` | 用串口把当前时间与时区写给板子 |
 | GET | `/airremote/firmware/manifest` | 内置固件元数据（manifest 缺失 / 损坏时 503） |
 | GET / HEAD | `/airremote/firmware/image` | 流式下发合并镜像，`application/octet-stream`，带 `Content-Length` / `ETag`；`If-None-Match` 命中回 304 |
@@ -85,14 +93,15 @@ UTC+1 柏林 / UTC+8 北京 / UTC+9 东京）加一个「同步到开发板」�
 `GET /airremote/time` → 200：
 
 ```json
-{ "ok": true, "timezone": "auto", "updatedAt": "2026-11-11T05:44:00.000Z" }
+{ "ok": true, "timezone": "auto", "autoSync": true, "updatedAt": "2026-11-11T05:44:00.000Z" }
 ```
 
-`timezone` 未保存过时为 `"auto"`，`updatedAt` 未保存过时为 `null`。
+`timezone` 未保存过时为 `"auto"`，`autoSync` 未保存过时为 `true`，`updatedAt` 未保存过时为 `null`。
 
-`POST /airremote/time` 请求体 `{ "timezone": "auto" }`：字符串、长度 1..32、只允许
-`[a-z0-9+_-]`（大小写不敏感，统一存小写）。合法 → 200 并返回与 GET 相同的结构（`updatedAt`
-为本次写入时间）；不合法 → 400。
+`POST /airremote/time` 请求体 `{ "timezone": "auto" }`、`{ "autoSync": false }` 或两者都给：
+`timezone` 为字符串、长度 1..32、只允许 `[a-z0-9+_-]`（大小写不敏感，统一存小写）；`autoSync`
+必须是布尔值；两项至少给一个，只改给出的字段，另一个沿用文件里的值。合法 → 200 并返回与 GET
+相同的结构（`updatedAt` 为本次写入时间）；不合法 → 400。
 
 `POST /airremote/sync-time` 请求体 `{ "minutes": 480 }`：整数、`-720..840`（东为正）。成功：
 
@@ -117,8 +126,9 @@ UTC+1 柏林 / UTC+8 北京 / UTC+9 东京）加一个「同步到开发板」�
 | `busy` | 已有一次同步在进行中 |
 | `internal` | 其它异常（`message` 带原因） |
 
-`unix` 取自 **host 的系统时钟**（`Math.floor(Date.now()/1000)`），不用浏览器时钟；同一时刻只
-允许一次同步，第二次直接回 `busy`。
+`unix` 取自 **host 的系统时钟**（`Math.floor(Date.now()/1000)`），不用浏览器时钟；手动同步与
+自动对时共享一个「一次只写一次串口」的闸门，同一时刻只允许一次同步，第二次（含自动对时正在写时）
+直接回 `busy`。
 
 ## 固件烧录
 
@@ -172,7 +182,8 @@ UTC+1 柏林 / UTC+8 北京 / UTC+9 东京）加一个「同步到开发板」�
 也就是**清除开发板上的 Wi-Fi 配网与时区设置**——这是镜像布局决定的，不是可选项。烧完必须：
 
 1. 重新配网（本插件暂不提供配网 UI，见「状态」表里的 M4）；
-2. 回到「开发板时间」再点一次「同步到开发板」，时区才会重新写给板子。
+2. 时间：自动对时开着（默认）时，烧完连上开发板的第一次会话就会自动补写时间和时区；关掉开关的话
+   回到「开发板时间」再点一次「同步到开发板」。
 
 ### 内置镜像怎么来的（开发侧，运行时绝不调用）
 
@@ -205,8 +216,9 @@ node scripts/bundle-firmware.mjs --version 0.4.0   # 打固件时显式给固件
 - `server.crt`：板子自签名证书（TLS pin；缺失则不校验）；
 - `simulate`：存在即启用模拟板子；
 - `sim.wav`：模拟板子循环的 16 kHz mono WAV；
-- `time.json`：设置页「开发板时间」选的时区，`{ "timezone": "auto", "updatedAt": "<ISO>" }`
-  （原子写：先写 `time.json.tmp` 再 rename；缺失或损坏按 `auto` 处理）。
+- `time.json`：设置页「开发板时间」选的时区与自动对时开关，
+  `{ "timezone": "auto", "autoSync": true, "updatedAt": "<ISO>" }`
+  （原子写：先写 `time.json.tmp` 再 rename；缺失或损坏按 `auto` + 自动对时开启处理）。
 - 固件**没有**缓存：内置镜像与 manifest 随插件包走（`plugins/dsh-airremote/firmware/`），运行时
   只读、流式下发，不往 `~/.dsh/airremote/` 写任何固件文件。
 
