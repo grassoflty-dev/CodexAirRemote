@@ -58,3 +58,6 @@ desktop.ini
 
 
 /plugins/*/test/dist/
+
+# Built plugin JS is shipped so git installs work without a build step.
+!/plugins/dsh-airremote/lib/

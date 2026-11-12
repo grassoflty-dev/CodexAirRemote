@@ -1,0 +1,18 @@
+/** Internal exports used by the local integration tests (`lib/host-test.js`). */
+export { AudioRoute } from './audio-route.js';
+export { AutoTimeSync } from './auto-sync.js';
+export { BoardSession } from './board-session.js';
+export { BoardDiscovery } from './discovery.js';
+export { FakeBoard } from './fake-board.js';
+export { acceptWebSocket, connectWebSocket } from './ws.js';
+export { parseAudioFrame, encodeAudioFrame, authMessage } from './protocol.js';
+export { readTimePreference, writeTimePreference, isTimezoneId } from './time-settings.js';
+export { findBoardPort, syncBoardTime, BoardSyncError } from './serial-port.js';
+export { SyncGate } from './sync-gate.js';
+export { TimeRoutes } from './time-routes.js';
+export { FirmwareRoutes } from './firmware-routes.js';
+export { SerialHolder, SerialRoutes } from './serial-holder.js';
+export { readChipInfo, pulseEnReset, NodeSerialPortDevice } from './serial-transport.js';
+export { flashFirmware, FlashError, loadFirmwareImage } from './flash-service.js';
+export { FlashRoute } from './flash-route.js';
+export { DEFAULT_TIMEZONE, TIMEZONE_OPTIONS, minutesForTimezone, systemOffsetMinutes } from '../time-zones.js';
