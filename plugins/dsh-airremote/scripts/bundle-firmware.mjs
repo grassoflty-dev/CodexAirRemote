@@ -182,10 +182,18 @@ function main() {
 
   if (merged === undefined) {
     if (flashArgs.parts.length === 0) fail('既没有合并产物，也没有 flash_args，无法合并')
-    info('执行 python -m esptool merge_bin（全局地址，@flash_args）...')
+    /* esptool v5 no longer expands `@flash_args` (it only fits `write_flash`) and
+     * renamed `-f` to `--format`. Rebuild the argument list explicitly: the
+     * global flash flags plus one `offset file` pair per part. */
+    const flashFlags = flashArgs.flags.length > 0
+      ? flashArgs.flags
+      : ['--flash_mode', 'dio', '--flash_freq', '80m', '--flash_size', '16MB']
+    const partArgs = flashArgs.parts.map((part) => `${part.offset} ${part.file}`).join(' ')
+    info('执行 python -m esptool merge_bin（显式参数，esptool v5 兼容）...')
     runPowerShell(
       `. '${activateScript}' | Out-Null; ` +
-        `python -m esptool --chip ${DEFAULT_CHIP} merge_bin -o '${join(buildDir, MERGED_NAME)}' -f raw @flash_args; ` +
+        `python -m esptool --chip ${DEFAULT_CHIP} merge_bin -o '${join(buildDir, MERGED_NAME)}' ` +
+        `${flashFlags.join(' ')} ${partArgs}; ` +
         'if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } else { exit 0 }',
       { cwd: buildDir, inherit: true }
     )
