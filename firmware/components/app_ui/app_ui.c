@@ -6,11 +6,13 @@
 
 #include "air_mouse.h"
 #include "app_busy.h"
+#include "app_key.h"
 #include "app_ui.h"
 #include "ble_mouse.h"
 #include "board.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "lvgl_private.h"
 #include "rtc_board.h"
 #include "voice.h"
@@ -66,6 +68,12 @@ static voice_state_t last_voice_seen = VOICE_IDLE;
 /* Set by the console test hook (app_ui.h) and consumed in render(). */
 static volatile bool standby_tap_request;
 static volatile char debug_click_request;
+/* 强制待机请求：由第三键或 app_ui_standby_now() 置位，render() 在 LVGL
+ * 上下文里执行，避免按键任务直接碰 LVGL。 */
+static volatile bool standby_request;
+static int64_t standby_request_us;
+static bool standby_force_pending;
+static uint32_t standby_force_log;
 
 /* Any interaction restarts the idle countdown. Also called from the USB
  * console task (app_ui_refresh_clock): a 32-bit tick read/write is atomic
@@ -274,6 +282,56 @@ static void touch_pressed(lv_event_t *event)
     if (standby_active) leave_standby("touch");
 }
 
+
+/* 强制待机的一步：先安全停掉占用方，等 app_busy 真正释放后才切页。
+ * 绝不允许“后台还在录音/发 HID，屏幕却黑了”，所以占用未释放时保持亮屏并
+ * 每秒打印一次等待状态，由下一次渲染 tick 重试。 */
+static void force_standby_step(void)
+{
+    voice_state_t voice = voice_state();
+    int64_t waited_ms;
+
+    if (mouse_active)
+    {
+        mouse_stop();
+        mouse_active = false;
+        ESP_LOGI(TAG, "standby: key stopped gyro mouse");
+    }
+    if (voice == VOICE_CONNECTING || voice == VOICE_RECORDING)
+    {
+        voice_finish(VOICE_ACTION_CANCEL);
+        ESP_LOGI(TAG, "standby: key cancels voice session (state %d)", (int)voice);
+    }
+    if (app_busy_active())
+    {
+        standby_force_pending = true;
+        if (lv_tick_elaps(standby_force_log) >= 1000)
+        {
+            standby_force_log = lv_tick_get();
+            ESP_LOGI(TAG, "standby: force pending, busy 0x%x", app_busy_mask());
+        }
+        return;
+    }
+    standby_force_pending = false;
+    waited_ms = (esp_timer_get_time() - standby_request_us) / 1000;
+    enter_standby();
+    ESP_LOGI(TAG, "standby: key force done, key->standby %lld ms", (long long)waited_ms);
+}
+
+/* 第三键回调和公开 API 都走这里：只置位，LVGL 操作留到 render()。 */
+void app_ui_standby_now(void)
+{
+    standby_request_us = esp_timer_get_time();
+    standby_request = true;
+}
+
+/* 按键任务上下文：不得直接调用 LVGL，只置请求位。 */
+static void key_short_press(void)
+{
+    ESP_LOGI(TAG, "key: short press -> standby");
+    app_ui_standby_now();
+}
+
 static void render(lv_timer_t *timer)
 {
     voice_state_t voice = voice_state();
@@ -296,6 +354,19 @@ static void render(lv_timer_t *timer)
             lv_indev_send_event(touch_indev, LV_EVENT_PRESSED, standby_page);
             lv_indev_send_event(touch_indev, LV_EVENT_RELEASED, standby_page);
         }
+    }
+
+    /* 第三键 / app_ui_standby_now()：待机时唤醒，否则强制进待机。 */
+    if (standby_request) {
+        standby_request = false;
+        if (standby_active) {
+            note_activity();
+            leave_standby("key");
+        } else {
+            force_standby_step();
+        }
+    } else if (standby_force_pending && !standby_active) {
+        force_standby_step();
     }
 
     /* Console test hook: play the click a finger would make on Gyro/Voice. */
@@ -686,6 +757,12 @@ bool app_ui_init(lv_display_t *display)
     last_activity = last_interaction;
     lv_timer_create(render, 125, NULL);
     render(NULL);
+    /* 侧边第三键（KEY，GPIO10）：短按/长按都只回调一次，回调里只置请求位，
+     * 真正的切页由 render() 在 LVGL 上下文完成。 */
+    app_key_set_press_cb(key_short_press);
+    if (app_key_init() != ESP_OK) {
+        ESP_LOGW(TAG, "third key unavailable, standby stays touch/idle only");
+    }
     /* The standby clock face is a 160 px Montserrat subset whose glyph bitmaps
      * live in rodata; only the six page objects cost LVGL heap. */
     lv_mem_monitor(&mon);

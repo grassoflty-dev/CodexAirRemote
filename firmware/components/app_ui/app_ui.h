@@ -20,10 +20,16 @@ void app_ui_refresh_clock(void);
  * (AR1S/AR1S TAP) injects the same input-device press a finger produces.
  * Set to 0 to compile the console side out. */
 /* TODO(发布前): 改成 0 —— 该宏会编入 AR1S / AR1S TAP / AR1B GYRO|VOICE 三个临时调试命令。 */
-#define APP_UI_STANDBY_TEST_HOOK 0
+#define APP_UI_STANDBY_TEST_HOOK 1
 
 /* True while the black standby page with the big clock is showing. */
 bool app_ui_standby_active(void);
+
+/* 立即进入待机页（侧边第三键短按、以及任何需要强制息屏的调用方）。
+ * 可从任意任务调用：先安全停掉占用方（陀螺仪鼠标、语音会话）并等 app_busy
+ * 真正释放，再由渲染 tick 在 LVGL 上下文里切页；已处于待机时则改为唤醒。
+ * 不会绕过 AXP2101 的电源键长按关机。 */
+void app_ui_standby_now(void);
 
 /* Ask the standby page to treat a tap as done (consumed by render()). */
 void app_ui_standby_tap(void);
