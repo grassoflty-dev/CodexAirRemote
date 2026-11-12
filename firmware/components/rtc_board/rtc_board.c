@@ -236,6 +236,12 @@ esp_err_t rtc_board_init(void)
     s_present = true;
 
     struct tm now;
+    uint8_t control_1_now = 0;
+    uint8_t seconds_now = 0;
+    if (rtc_read(RTC_REG_CONTROL_1, &control_1_now, 1) != ESP_OK) control_1_now = 0xFF;
+    if (rtc_read(RTC_REG_SECONDS, &seconds_now, 1) != ESP_OK) seconds_now = 0xFF;
+    ESP_LOGI(TAG, "PCF85063A status: control_1=0x%02x (STOP=%d), seconds=0x%02x (OS=%d)",
+             control_1_now, (control_1_now >> 5) & 1, seconds_now, (seconds_now >> 7) & 1);
     if (read_fields(&now) == ESP_OK && fields_valid(&now)) {
         int64_t utc = unix_from_fields(&now);
         time_t local = (time_t)(utc + (int64_t)s_tz_minutes * 60);

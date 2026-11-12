@@ -86,6 +86,10 @@ static volatile char debug_click_request;
 /* 强制待机请求：由第三键或 app_ui_standby_now() 置位，render() 在 LVGL
  * 上下文里执行，避免按键任务直接碰 LVGL。 */
 static volatile bool standby_request;
+/* 真实触摸触发的唤醒请求：indev 回调只置位，render() 再切页。 */
+static volatile bool standby_wake_request;
+static unsigned touch_events;
+static unsigned wake_events;
 static int64_t standby_request_us;
 static bool standby_force_pending;
 static uint32_t standby_force_log;
@@ -378,6 +382,22 @@ static void update_standby_clock(bool force)
     if (!force && lv_tick_elaps(last_sample) < 1000) return;
     last_sample = lv_tick_get();
     rtc_board_time_text(text, sizeof(text));
+    second = rtc_board_second();
+    /* 时间无效时不要显示 00:00 这种假数据：大数字整行隐藏，秒行显示 "--"，
+     * 等宿主（插件）校时后自动恢复。 */
+    if (second < 0 || text[0] == '-') {
+        for (int i = 0; i < 5; i++) lv_obj_add_flag(standby_cell_img[i], LV_OBJ_FLAG_HIDDEN);
+        if (strcmp(lv_label_get_text(standby_sec_label), "--") != 0) {
+            lv_label_set_text(standby_sec_label, "--");
+            changed = true;
+        }
+        if (changed) {
+            ESP_LOGW(TAG, "standby: clock invalid, placeholder shown, touches=%u wakes=%u",
+                     touch_events, wake_events);
+        }
+        return;
+    }
+    for (int i = 0; i < 5; i++) lv_obj_remove_flag(standby_cell_img[i], LV_OBJ_FLAG_HIDDEN);
     if (strlen(text) < 5) return;
     for (int i = 0; i < 5; i++) {
         if (standby_cell_char[i] != text[i]) {
@@ -385,9 +405,7 @@ static void update_standby_clock(bool force)
             changed = true;
         }
     }
-    second = rtc_board_second();
-    if (second >= 0) snprintf(seconds, sizeof(seconds), "%02d", second % 100);
-    else snprintf(seconds, sizeof(seconds), "--");
+    snprintf(seconds, sizeof(seconds), "%02d", second % 100);
     if (strcmp(lv_label_get_text(standby_sec_label), seconds) != 0) {
         lv_label_set_text(standby_sec_label, seconds);
         changed = true;
@@ -396,11 +414,9 @@ static void update_standby_clock(bool force)
         int layout_ok = standby_layout_ok();
 
         ESP_LOGI(TAG, "standby: clock %c%c:%c%c:%s, layout=%s, glyphs=%d, mask_fail=%u, "
-                 "sec %s %dx%d", text[0], text[1], text[3], text[4], seconds,
+                 "touches=%u wakes=%u", text[0], text[1], text[3], text[4], seconds,
                  layout_ok ? "ok" : "ERROR", standby_glyph_pixels_ok,
-                 (unsigned)mask_fail_count, seconds,
-                 (int)lv_obj_get_width(standby_sec_label),
-                 (int)lv_obj_get_height(standby_sec_label));
+                 (unsigned)mask_fail_count, touch_events, wake_events);
         if (!layout_ok || standby_glyph_pixels_ok != 1 || mask_fail_count != 0) {
             ESP_LOGE(TAG, "STANDBY LAYOUT ERROR: layout=%d glyphs=%d mask_fail=%u", layout_ok,
                      standby_glyph_pixels_ok, (unsigned)mask_fail_count);
@@ -480,8 +496,13 @@ static void leave_standby(const char *why)
  * routed to the standby page (see enter_standby), so no button sees it. */
 static void touch_pressed(lv_event_t *event)
 {
+    touch_events++;
     note_activity();
-    if (standby_active) leave_standby("touch");
+    /* 只置位，不在这里动对象树：唤醒要隐藏页面、把电量标签挂回主屏幕，那属于
+     * 结构变更，必须回到 render() 的 LVGL 循环里做，否则会在 indev 派发过程中
+     * 改对象树（实测症状：待机页摸不醒 / 醒了点不动）。 */
+    if (standby_active) standby_wake_request = true;
+    ESP_LOGI(TAG, "ui: real touch #%u, standby=%d", touch_events, standby_active ? 1 : 0);
 }
 
 /* 强制待机的一步：先安全停掉占用方，等 app_busy 真正释放后才切页。
@@ -557,11 +578,23 @@ static void render(lv_timer_t *timer)
         }
     }
 
+    /* 真实触摸唤醒：indev 回调只置位，这里（LVGL 循环内）才隐藏页面、把电量
+     * 标签挂回主屏幕，避免在输入派发过程中改对象树。 */
+    if (standby_wake_request) {
+        standby_wake_request = false;
+        if (standby_active) {
+            note_activity();
+            wake_events++;
+            leave_standby("touch");
+        }
+    }
+
     /* 第三键 / app_ui_standby_now()：待机时唤醒，否则强制进待机。 */
     if (standby_request) {
         standby_request = false;
         if (standby_active) {
             note_activity();
+            wake_events++;
             leave_standby("key");
         } else {
             force_standby_step();
