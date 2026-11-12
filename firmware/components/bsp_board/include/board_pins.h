@@ -45,6 +45,10 @@
 #define BOARD_I2S_DOUT      (GPIO_NUM_23)
 #define BOARD_I2S_DSIN      (GPIO_NUM_21)
 
+/* 侧面第三个实体按键（官方资料称 KEY 键）：GPIO10，10K 上拉到 3V3，按下拉低，
+ * 无硬件消抖电容。BOOT 键是 GPIO9，电源键接 AXP2101 PWRKEY（不占 GPIO）。 */
+#define BOARD_KEY_BUTTON    (GPIO_NUM_10)
+
 #define BOARD_LCD_H_RES         (480)
 #define BOARD_LCD_V_RES         (480)
 #define BOARD_LCD_SPI_NUM       (SPI2_HOST)
