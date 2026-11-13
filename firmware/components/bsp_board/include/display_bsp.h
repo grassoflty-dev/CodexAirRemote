@@ -23,6 +23,7 @@ private:
     int tp_reset_;
     bool is_touchinitialized_ = false;
     uint8_t brightness_ = 100;
+    uint8_t madctl_ = 0x30;
 
     int DisplayPort_DispReset(void);
 public:
@@ -31,7 +32,15 @@ public:
 
     void DisplayPort_TouchInit(void);
     void Set_Backlight(uint8_t brightness);
-    void Set_Rotate(uint8_t Rotate);
+
+    /* 用 SH8601 的 MADCTL(0x36) 做硬件旋转，degrees 取 0/90/180/270（其它值按
+     * 90 度向下取整）。像素由面板自己搬，刷屏回调不需要转置，也就不再需要 DMA
+     * scratch。返回 ESP_OK 只表示 SPI 命令已发出：SH8601 的 QSPI 读通路没有
+     * 实现，MADCTL 读回不可靠，所以这里不读回校验。 */
+    esp_err_t Set_Rotate(uint16_t degrees);
+
+    /* 最近一次成功写入的 MADCTL 值，用于日志和排查。 */
+    uint8_t Get_Madctl(void) { return madctl_; }
 
     spi_host_device_t Get_SpiHost() { return spihost_; }
     esp_lcd_panel_handle_t Get_PanelHandle() { return panel_handle; }

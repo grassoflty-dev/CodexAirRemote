@@ -1,183 +1,88 @@
-﻿#include <stdio.h>
+#include <stdio.h>
 #include <string.h>
 #include <freertos/FreeRTOS.h>
-#include <esp_heap_caps.h>
 #include <esp_log.h>
+#include <esp_rom_sys.h>
 #include <esp_timer.h>
 #include "lvgl_bsp.h"
 #include <esp_lcd_touch.h>
 #include "esp_lv_adapter.h"
 #include "user_config.h"
+/* disp->flushing：给 flush 等待加超时，见 flush_wait_timeout_cb()。 */
+#include "display/lv_display_private.h"
 
 static const char *TAG = "lvgl_bsp";
 
+/* flush_wait 的超时上限。正常一帧的 DMA 传输是个位数毫秒，超过这个数说明
+ * flush_ready 不会再来了，必须放弃等待而不是自旋到死。 */
+#define FLUSH_WAIT_TIMEOUT_MS 100
+
 static lv_display_t *disp = NULL;
+static DisplayPort *disp_port = NULL;
+static int display_rotation = 0;
 
 /*
- * Screen rotation lives in the display flush path, not in the panel driver.
+ * 屏幕旋转由 SH8601 的 MADCTL(0x36) 在硬件里完成，软件不再碰像素：
  *
- * Facts (verified in this repo's managed_components):
- *  - LVGL 9.6 only renders a display rotation through its matrix transform:
- *    the rotation block in src/core/lv_refr.c:1001-1058 is inside
- *    `#if LV_DRAW_TRANSFORM_USE_MATRIX`, and the flush callback then receives
- *    already rotated areas (lv_refr.c:1446-1481).
- *  - lv_display_set_matrix_rotation() refuses to enable it unless the display
- *    renders in DIRECT or FULL mode (src/display/lv_display.c, "Unsupported
- *    rendering mode"). This panel is registered by esp_lv_adapter in PARTIAL
- *    mode with a 12 row draw buffer (see Lvgl_PortInit below), and a
- *    480x480x2 byte framebuffer for DIRECT/FULL would need 450 KiB that the
- *    ESP32-C6 does not have.
- *  - The panel driver cannot rotate either: esp_lcd_sh8601.c:311 rejects
- *    mirror_y and :320-322 rejects swap_xy, and the adapter says so itself
- *    (display_manager.c:582).
+ *  - 面板自己交换行列/镜像，所以刷屏回调可以直接把 LVGL 给的逻辑坐标区域
+ *    （以及 RGB565 数据）原样交给 adapter，不需要转置，也不需要那 11.5 KB 的
+ *    DMA scratch 缓冲区。0.6.1 的死机正是这块 scratch 引起的：BLE 起来后
+ *    DMA 池只剩 free 4932 / largest 3520，分配失败后回退 non-DMA，SPI 驱动的
+ *    私有 DMA 反弹缓冲同样分配失败，flush_ready 永不回调，LVGL 在
+ *    `while(disp->flushing)` 里自旋，整机连串口都不再响应。
  *
- * So: LVGL keeps drawing the UI in logical (unrotated) coordinates and
- * lv_display_set_rotation() is still set, which makes LVGL's own input device
- * transform touch points (src/indev/lv_indev.c:763-768 calls
- * lv_display_rotate_point_ccw()/lv_display_rotate_point()). Every flushed band
- * is then rotated and transposed here into a scratch buffer before it is
- * handed to the adapter's original flush callback, using exactly the pixel
- * mapping of LVGL's matrix path (lv_refr.c:1002-1058), i.e. the inverse of
- * lv_display_rotate_point(): 90 deg maps (x,y) -> (y, ver_res-1-x). Touch and
- * pixels therefore always agree, on both the normal page and the standby page,
- * because this sits below the whole widget tree.
+ *  - lv_display_set_rotation() 仍然要调：它负责更新逻辑分辨率（480x480 方形屏
+ *    四个方向都不变）、让 LVGL 重绘，并且让 LVGL 自己把触摸原始坐标按旋转角
+ *    变换回逻辑坐标（src/indev/lv_indev.c:763-768 -> lv_display_rotate_point()，
+ *    默认的顺时针方向正好是 LVGL 画布旋转的逆变换）。因此触摸 read_cb 里
+ *    绝对不能再转一次，否则就是二次旋转；触摸的 hor_res/ver_res 也来自显示
+ *    分辨率，四个方向都是 480x480，不需要改。
  *
- * Cost: one 16-bit transpose of every flushed band plus one extra copy into
- * the scratch buffer (the draw buffer itself is ~1/40 of the screen, so this
- * is a per-band cost, not a full-screen one).
+ *  - 逻辑坐标与物理坐标的对应关系仍然是 LVGL 的约定：
+ *    LV_DISPLAY_ROTATION_90 时逻辑 (x,y) 落在物理 (y, 479-x)，与 MADCTL 表里
+ *    90 度那一项（0x50）完全一致，所以像素和触摸永远同向。
  */
 
-static lv_display_flush_cb_t adapter_flush_cb; /* the adapter's own flush */
-static int display_rotation;                   /* 0/90/180/270 */
-static bool rotate_in_flush;                   /* true = PARTIAL mode path */
-static uint8_t *rotate_buf;                    /* scratch, one draw buffer big */
-static bool rotate_buf_dma;                     /* scratch is DMA capable */
-static size_t rotate_buf_size;
-static unsigned rotate_fallbacks;              /* bands sent through unrotated */
-static bool rotate_first_logged;
-
-/* Destination area of one flushed band for a given rotation. Pixel centres map
- * the same way as in lv_display_rotate_point(), so these areas are the inverse
- * of what the indev transform expects. The panel is square (480x480), so a
- * 90/270 step keeps the area dimensions. */
-static void rotate_area(const lv_area_t *src, lv_area_t *dst, int rotation)
-{
-    switch (rotation) {
-    case 90:
-        dst->x1 = src->y1;
-        dst->x2 = src->y2;
-        dst->y1 = BSP_LCD_V_RES - 1 - src->x2;
-        dst->y2 = BSP_LCD_V_RES - 1 - src->x1;
-        break;
-    case 180:
-        dst->x1 = BSP_LCD_H_RES - 1 - src->x2;
-        dst->x2 = BSP_LCD_H_RES - 1 - src->x1;
-        dst->y1 = BSP_LCD_V_RES - 1 - src->y2;
-        dst->y2 = BSP_LCD_V_RES - 1 - src->y1;
-        break;
-    case 270:
-        dst->x1 = BSP_LCD_H_RES - 1 - src->y2;
-        dst->x2 = BSP_LCD_H_RES - 1 - src->y1;
-        dst->y1 = src->x1;
-        dst->y2 = src->x2;
-        break;
-    default:
-        *dst = *src;
-        break;
-    }
-}
-
-/* Rotate a w x h RGB565 band into dst. 16-bit units are copied verbatim, so the
- * byte order LVGL/ the adapter expects is untouched (the adapter does its own
- * rgb565_swap on the buffer it is given). */
-static void rotate_pixels(const uint8_t *src, int32_t w, int32_t h, uint8_t *dst, int rotation)
-{
-    const uint16_t *in = (const uint16_t *)src;
-    uint16_t *out = (uint16_t *)dst;
-
-    switch (rotation) {
-    case 90: { /* dst is h wide and w high: dx = y, dy = w-1-x */
-        for (int32_t y = 0; y < h; y++) {
-            const uint16_t *row = in + (size_t)y * (size_t)w;
-            for (int32_t x = 0; x < w; x++) {
-                out[(size_t)(w - 1 - x) * (size_t)h + (size_t)y] = row[x];
-            }
-        }
-        break;
-    }
-    case 180: { /* dst is w wide and h high: dx = w-1-x, dy = h-1-y */
-        for (int32_t y = 0; y < h; y++) {
-            const uint16_t *row = in + (size_t)y * (size_t)w;
-            uint16_t *line = out + (size_t)(h - 1 - y) * (size_t)w;
-            for (int32_t x = 0; x < w; x++) {
-                line[w - 1 - x] = row[x];
-            }
-        }
-        break;
-    }
-    default: { /* 270: dst is h wide and w high: dx = h-1-y, dy = x */
-        for (int32_t y = 0; y < h; y++) {
-            const uint16_t *row = in + (size_t)y * (size_t)w;
-            for (int32_t x = 0; x < w; x++) {
-                out[(size_t)x * (size_t)h + (size_t)(h - 1 - y)] = row[x];
-            }
-        }
-        break;
-    }
-    }
-}
-
-/* Interposed flush: rotate the band, then let the adapter push it to the panel.
- * The adapter's callback is the only code that knows the SPI bridge, so it is
- * always the one doing the transfer (it also calls lv_display_flush_ready() from
- * the color-trans-done ISR). LVGL runs single buffered here and waits for that
- * ready before rendering the next band, so rotate_buf cannot be reused too
- * early. */
-static void rotated_flush_cb(lv_display_t *display, const lv_area_t *area, uint8_t *color_map)
-{
-    if (!rotate_in_flush || display_rotation == 0) {
-        adapter_flush_cb(display, area, color_map);
-        return;
-    }
-
-    const int32_t w = lv_area_get_width(area);
-    const int32_t h = lv_area_get_height(area);
-    const size_t bytes = (size_t)w * (size_t)h * 2u;
-
-    if (rotate_buf == NULL || bytes > rotate_buf_size) {
-        /* Never silently draw a half rotated frame: count it and say it once. */
-        if (rotate_fallbacks++ == 0) {
-            ESP_LOGE(TAG, "rotation: band %dx%d (%u B) exceeds scratch %u B, frame not rotated",
-                     (int)w, (int)h, (unsigned)bytes, (unsigned)rotate_buf_size);
-        }
-        adapter_flush_cb(display, area, color_map);
-        return;
-    }
-
-    lv_area_t dst;
-    rotate_area(area, &dst, display_rotation);
-    rotate_pixels(color_map, w, h, rotate_buf, display_rotation);
-
-    if (!rotate_first_logged) {
-        rotate_first_logged = true;
-        ESP_LOGI(TAG, "rotation: first band %d,%d..%d,%d -> %d,%d..%d,%d (%d deg, %u B)",
-                 (int)area->x1, (int)area->y1, (int)area->x2, (int)area->y2, (int)dst.x1,
-                 (int)dst.y1, (int)dst.x2, (int)dst.y2, display_rotation, (unsigned)bytes);
-    }
-
-    adapter_flush_cb(display, &dst, rotate_buf);
-}
-
+/* 把 0/90/180/270 映射成 LVGL 的旋转枚举，其它值按 0 处理。 */
 static lv_display_rotation_t lvgl_rotation_of(int degrees)
 {
-    switch (degrees) {
-    case 90:  return LV_DISPLAY_ROTATION_90;
-    case 180: return LV_DISPLAY_ROTATION_180;
-    case 270: return LV_DISPLAY_ROTATION_270;
-    default:  return LV_DISPLAY_ROTATION_0;
+    switch (degrees)
+    {
+    case 90:
+        return LV_DISPLAY_ROTATION_90;
+    case 180:
+        return LV_DISPLAY_ROTATION_180;
+    case 270:
+        return LV_DISPLAY_ROTATION_270;
+    default:
+        return LV_DISPLAY_ROTATION_0;
     }
 }
 
+/*
+ * LVGL 9 默认在 wait_for_flushing() 里 `while(disp->flushing);` 自旋。这里换成
+ * 带超时的等待：正常情况下一帧 SPI 传输完成即返回；一旦 flush_ready 因为
+ * DMA/驱动错误不再回来，最多等 FLUSH_WAIT_TIMEOUT_MS，打一条 E 日志后放弃，
+ * 由 LVGL 自己清 flushing。结果是"掉一帧 + 报错"，而不是整机卡死。
+ */
+static void flush_wait_timeout_cb(lv_display_t *display)
+{
+    uint32_t start = lv_tick_get();
+
+    while (display->flushing)
+    {
+        if (lv_tick_elaps(start) >= FLUSH_WAIT_TIMEOUT_MS)
+        {
+            ESP_LOGE(TAG, "flush_wait: display %p (%dx%d) still flushing after %d ms, frame dropped",
+                     (void *)display, (int)lv_display_get_horizontal_resolution(display),
+                     (int)lv_display_get_vertical_resolution(display), FLUSH_WAIT_TIMEOUT_MS);
+            break;
+        }
+        esp_rom_delay_us(200);
+    }
+}
+
+/* 刷新一帧（设置页/待机页切换等需要立即看到结果的场合用）。 */
 extern "C" lv_display_t *Lvgl_GetDisplay(void)
 {
     return disp;
@@ -188,73 +93,41 @@ extern "C" int Lvgl_GetDisplayRotation(void)
     return display_rotation;
 }
 
+/*
+ * 设置屏幕方向：先写面板 MADCTL（硬件旋转），再让 LVGL 更新旋转状态并整屏
+ * 重绘。写失败时保持原方向，返回当前真正生效的角度。调用时必须持有 LVGL 锁。
+ */
 extern "C" int Lvgl_SetDisplayRotation(int degrees)
 {
-    if (disp == NULL) {
+    if (disp == NULL || disp_port == NULL)
+    {
         ESP_LOGE(TAG, "rotation: display not ready");
         return 0;
     }
 
     degrees %= 360;
-    if (degrees < 0) degrees += 360;
-    degrees = (degrees / 90) * 90; /* snap to a supported step */
+    if (degrees < 0)
+    {
+        degrees += 360;
+    }
+    degrees = (degrees / 90) * 90;
 
-    if (degrees != 0 && rotate_in_flush && rotate_buf == NULL) {
-        /* Lazy: an untouched rotation setting costs no RAM. One draw buffer is
-         * the largest band LVGL can flush in PARTIAL mode.
-         *
-         * The buffer must be DMA capable: the SPI panel driver hands it to the
-         * QSPI DMA, and a plain 8-bit buffer made it copy through a private
-         * DMA buffer that failed to allocate for an 11.5 KiB band ("setup_dma_priv_buffer:
-         * Failed to allocate priv TX buffer"), which blocked LVGL forever on the
-         * first rotated flush. Fall back loudly instead of silently stalling. */
-        size_t bytes = lv_display_get_draw_buf_size(disp);
-        rotate_buf = (uint8_t *)heap_caps_malloc(bytes, MALLOC_CAP_DMA | MALLOC_CAP_8BIT);
-        rotate_buf_dma = rotate_buf != NULL;
-        if (rotate_buf == NULL) {
-            ESP_LOGE(TAG,
-                     "rotation: DMA scratch %u B FAILED (dma free %u largest %u); "
-                     "falling back to non-DMA, rotation may stall SPI",
-                     (unsigned)bytes,
-                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA),
-                     (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA));
-            rotate_buf = (uint8_t *)heap_caps_malloc(bytes, MALLOC_CAP_8BIT);
-        }
-        if (rotate_buf == NULL) {
-            ESP_LOGE(TAG, "rotation: scratch %u B alloc FAILED, 8bit free %u largest %u",
-                     (unsigned)bytes,
-                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
-                     (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
-            degrees = 0;
-        } else {
-            rotate_buf_size = bytes;
-            ESP_LOGI(TAG, "rotation: scratch %u B allocated (%s), 8bit free %u dma free %u",
-                     (unsigned)bytes, rotate_buf_dma ? "DMA" : "non-DMA",
-                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
-                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA));
-        }
+    if (disp_port->Set_Rotate((uint16_t)degrees) != ESP_OK)
+    {
+        ESP_LOGE(TAG, "rotation: MADCTL write failed, keeping %d deg", display_rotation);
+        return display_rotation;
     }
 
     display_rotation = degrees;
-
-    if (!rotate_in_flush) {
-        /* DIRECT/FULL: LVGL can do it on its own (matrix transform). */
-#if LV_DRAW_TRANSFORM_USE_MATRIX
-        lv_display_set_matrix_rotation(disp, true);
-#else
-        ESP_LOGW(TAG, "rotation: matrix transform not enabled, DIRECT mode rotation unavailable");
-#endif
-    }
     lv_display_set_rotation(disp, lvgl_rotation_of(degrees));
 
-    /* The whole tree has to be repainted: the old pixels are rotated the wrong
-     * way, and a partial redraw would leave them on the panel. */
+    /* 面板把整幅画面换了位置，旧像素全部作废，必须整屏重绘。 */
     lv_obj_invalidate(lv_display_get_screen_active(disp));
 
-    ESP_LOGI(TAG, "rotation -> %d deg via %s, scratch %u B (%s), %u bands sent unrotated",
-             display_rotation, rotate_in_flush ? "flush transpose" : "lvgl matrix",
-             (unsigned)rotate_buf_size, rotate_buf_dma ? "DMA" : "non-DMA",
-             rotate_fallbacks);
+    ESP_LOGI(TAG, "rotation -> %d deg via SH8601 MADCTL 0x%02x, logical %dx%d",
+             display_rotation, (unsigned)disp_port->Get_Madctl(),
+             (int)lv_display_get_horizontal_resolution(disp),
+             (int)lv_display_get_vertical_resolution(disp));
 
     return display_rotation;
 }
@@ -322,26 +195,28 @@ void Lvgl_PortInit(DisplayPort &display) {
         BSP_LCD_V_RES,
         ESP_LV_ADAPTER_ROTATE_0
     );
-    /* 480 x 8 x 2 bytes = 7.5 KiB draw buffer, single buffered. */
+    /* 480 x 12 x 2 bytes = 11.25 KiB draw buffer, single buffered. */
     disp_cfg.profile.buffer_height = 12;
 	
 	disp = esp_lv_adapter_register_display(&disp_cfg);
     assert(disp != NULL);
+    disp_port = &display;
+    /* 启动时把当前方向（0 度）再写一遍，既覆盖 init 序列里的 0x36，也把
+     * "MADCTL 写成功"打进日志，便于确认 QSPI 写通路正常。写失败不阻止启动：
+     * 面板会停在 init 的 0 度，只是旋转按钮不可用。 */
+    if (display.Set_Rotate(0) != ESP_OK)
+    {
+        ESP_LOGE(TAG, "rotation: baseline MADCTL write failed, rotation disabled");
+    }
 #if LVGL_VERSION_MAJOR >= 9
     lv_display_add_event_cb(disp, rounder_event_cb, LV_EVENT_INVALIDATE_AREA, NULL);
 
-    /* Keep the adapter's flush callback and put the rotation in front of it:
-     * the adapter's bridge is the only place that talks to the panel (and that
-     * reports the transfer back to LVGL). */
-    adapter_flush_cb = lv_display_get_flush_cb(disp);
-    lv_display_render_mode_t render_mode = lv_display_get_render_mode(disp);
-    rotate_in_flush = (render_mode == LV_DISPLAY_RENDER_MODE_PARTIAL);
-    assert(adapter_flush_cb != NULL);
-    lv_display_set_flush_cb(disp, rotated_flush_cb);
-    ESP_LOGI(TAG, "display: %dx%d, render mode %d, draw buf %u B, rotation via %s",
-             (int)BSP_LCD_H_RES, (int)BSP_LCD_V_RES, (int)render_mode,
-             (unsigned)lv_display_get_draw_buf_size(disp),
-             rotate_in_flush ? "flush transpose" : "lvgl matrix");
+    /* 旋转在面板里做，这里只保留 adapter 自己的刷屏回调（它在 SPI 传输完成
+     * 的中断里回调 flush_ready）；另外给 flush 等待加 100 ms 超时兜底。 */
+    lv_display_set_flush_wait_cb(disp, flush_wait_timeout_cb);
+    ESP_LOGI(TAG, "display: %dx%d, render mode %d, draw buf %u B, rotation via SH8601 MADCTL",
+             (int)BSP_LCD_H_RES, (int)BSP_LCD_V_RES, (int)lv_display_get_render_mode(disp),
+             (unsigned)lv_display_get_draw_buf_size(disp));
 #else
     lv_disp_t *disp_v8 = (lv_disp_t *)disp;
     if (disp_v8 && disp_v8->driver) {

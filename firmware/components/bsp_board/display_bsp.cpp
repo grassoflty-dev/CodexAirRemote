@@ -122,17 +122,54 @@ void DisplayPort::Set_Backlight(uint8_t brightness) {
     esp_lcd_panel_io_tx_param(io_handle, CMD, &bl_val,1);
 }
 
-void DisplayPort::Set_Rotate(uint8_t Rotate) {
-    uint8_t rot = 0x00;
-    uint32_t CMD = 0x36;
-    CMD &= 0xFF;
-    CMD <<= 8;
-    CMD |= 0x02 << 24;
-    if(Rotate == 1) {
-        rot = 0x30;
+/*
+ * QSPI 写命令字：高字节是 opcode（0x02 = 写命令/参数），低字节是面板命令。
+ * esp_lcd_sh8601 内部用同样的拼法，但那个宏没有导出到公开头文件。
+ */
+static uint32_t Sh8601_WriteCmd(uint8_t cmd) {
+    uint32_t word = 0x02;
+
+    word <<= 24;
+    word |= (uint32_t)cmd << 8;
+
+    return word;
+}
+
+/*
+ * 硬件旋转：只改 MADCTL 的 MY/MX/MV 三个旋转位，其余位（ML、BGR 等）保持
+ * lcd_init_cmds 里 0x36 的基线值，颜色顺序和刷新方向都不动。
+ *
+ * 基线 0x30 = MV|ML，是 0 度（当前固件正常显示的方向）。以它为基准的四个
+ * 组合（掩码是对基线做异或）：
+ *   0  度: 0x30            （不变）
+ *   90 度: 0x30 ^ 0x60 = 0x50   （关 MV，开 MX）
+ *   180度: 0x30 ^ 0xC0 = 0xF0   （开 MX+MY）
+ *   270度: 0x30 ^ 0xA0 = 0x90   （关 MV，开 MY）
+ * 推导：MV 置位时 CASET/RASET 与面板的行列互换，此时 MX 翻转的是图像的纵向、
+ * MY 翻转横向；MV 清零后 MX 直接翻横向、MY 翻纵向。要把逻辑像素 (x,y) 放到
+ * 物理位置 (y, 479-x)（即 LVGL 的 LV_DISPLAY_ROTATION_90 约定，逆时针 90 度），
+ * 需要"横向翻转 + 取消行列互换"，就是 0x50；180 度是"横纵都翻"= 0xF0；270 度
+ * 是"纵向翻转 + 取消行列互换"= 0x90。方形屏 480x480，行列互换不影响分辨率。
+ *
+ * 必须在 esp_lcd_panel_init() 之后写：init 序列末尾的 {0x36, 0x30} 会覆盖驱动
+ * 自己发的那次 MADCTL（日志里 "The 36h command has been used and will be
+ * overwritten by external initialization sequence" 说的就是它）。
+ */
+esp_err_t DisplayPort::Set_Rotate(uint16_t degrees) {
+    static const uint8_t rotate_mask[4] = {0x00, 0x60, 0xC0, 0xA0};
+    uint8_t step = (uint8_t)((degrees / 90) % 4);
+    uint8_t madctl = (uint8_t)(0x30 ^ rotate_mask[step]);
+    esp_err_t err;
+
+    err = esp_lcd_panel_io_tx_param(io_handle, Sh8601_WriteCmd(0x36), &madctl, 1);
+    if(err != ESP_OK) {
+        ESP_LOGE(TAG, "MADCTL 0x36 <- 0x%02x failed: %s", madctl, esp_err_to_name(err));
+        return err;
     }
-    else {
-        rot = 0x00;
-    }
-    esp_lcd_panel_io_tx_param(io_handle, CMD, &rot,1);
+
+    madctl_ = madctl;
+    ESP_LOGI(TAG, "MADCTL 0x36 <- 0x%02x (%u deg, base 0x30 ^ mask 0x%02x)",
+             madctl, (unsigned)(step * 90), rotate_mask[step]);
+
+    return ESP_OK;
 }

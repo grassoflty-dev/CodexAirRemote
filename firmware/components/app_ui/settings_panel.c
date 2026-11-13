@@ -73,6 +73,7 @@ static lv_obj_t *rotate_label;
 
 static lv_indev_t *touch_indev;
 static lv_obj_t *panel_screen;
+static lv_display_t *panel_display;
 
 static bool panel_open;
 static bool panel_built;
@@ -380,8 +381,8 @@ static void panel_touch_cb(lv_event_t *event)
 
 void settings_panel_init(lv_obj_t *screen, lv_display_t *display, lv_indev_t *indev)
 {
-    (void)display;
     panel_screen = screen;
+    panel_display = display;
     touch_indev = indev;
     panel_open = false;
     panel_built = false;
@@ -418,7 +419,9 @@ void settings_panel_open(void)
 
     app_busy_acquire(APP_BUSY_SETTINGS);
     app_ui_note_activity();
-    ESP_LOGI(TAG, "settings: panel open, brightness %d, rotation %d, busy 0x%x",
+    ESP_LOGI(TAG, "settings: panel open (full %dx%d), brightness %d, rotation %d, busy 0x%x",
+             panel_display != NULL ? (int)lv_display_get_horizontal_resolution(panel_display) : 0,
+             panel_display != NULL ? (int)lv_display_get_vertical_resolution(panel_display) : 0,
              app_ui_brightness(), board_display_rotation(), app_busy_mask());
 }
 

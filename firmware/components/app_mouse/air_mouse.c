@@ -77,6 +77,40 @@ static int8_t report_delta(float motion)
     return (int8_t)fmaxf(-127, fminf(127, motion));
 }
 
+/*
+ * 光标方向跟着屏幕方向：显示旋转 N 度以后，用户在屏幕上看到的"右/上"不再是
+ * 板体的 +x/+y，按板体坐标算出来的位移要换到屏幕逻辑坐标里：
+ *   90 度 : (x, y) -> (-y,  x)
+ *   180度 : (x, y) -> (-x, -y)
+ *   270度 : (x, y) -> ( y, -x)
+ * 推导：90 度时逻辑 (x,y) 显示在物理 (y, 479-x)（见 display_bsp.cpp 的 MADCTL
+ * 表），反解物理位移 (bx,by) 就是逻辑位移 (-by, bx)；180/270 度同理。旋转是
+ * 线性的，所以只旋转本次要上报的整数部分，余量继续留在 dx/dy 里累加。
+ */
+static void rotate_report_delta(int8_t *x, int8_t *y)
+{
+    int8_t bx = *x;
+    int8_t by = *y;
+
+    switch (board_display_rotation())
+    {
+    case 90:
+        *x = (int8_t)-by;
+        *y = bx;
+        break;
+    case 180:
+        *x = (int8_t)-bx;
+        *y = (int8_t)-by;
+        break;
+    case 270:
+        *x = by;
+        *y = (int8_t)-bx;
+        break;
+    default:
+        break;
+    }
+}
+
 static void mouse_task(void *unused)
 {
     bool running = false, release_pending = true;
@@ -247,14 +281,16 @@ static void mouse_task(void *unused)
         /* 16 ms cadence: 125 reports/s overran the BLE connection interval and
          * filled the controller queue, which surfaced as send failures. */
         if ((++report_tick % 4) == 0 || button_event) {
-            int8_t x = report_delta(dx), y = report_delta(dy);
+            int8_t body_x = report_delta(dx), body_y = report_delta(dy);
+            int8_t x = body_x, y = body_y;
+            rotate_report_delta(&x, &y);
             if (x || y || button_event) {
                 if (atomic_load(&requested) && ble_mouse_report(buttons, x, y)) {
 #if AIR_MOUSE_DIAGNOSTICS
                     sent_reports++;
 #endif
-                    dx -= x;
-                    dy -= y;
+                    dx -= body_x;
+                    dy -= body_y;
                     sent_buttons = buttons;
                     if (queued) xQueueReceive(button_events, &buttons, 0);
                 } else {
