@@ -1,4 +1,4 @@
-﻿# ESP32-C6-Touch-AMOLED-2.16 firmware defaults (ESP-IDF 5.5.x).
+# ESP32-C6-Touch-AMOLED-2.16 firmware defaults (ESP-IDF 5.5.x).
 # Regenerate sdkconfig with: idf.py set-target esp32c6 && idf.py build
 CONFIG_IDF_TARGET="esp32c6"
 
@@ -50,7 +50,6 @@ CONFIG_ESP_TLS_USE_DS_PERIPHERAL=n
 CONFIG_MBEDTLS_HARDWARE_AES=n
 
 # LVGL (managed component lvgl/lvgl 9.x)
-CONFIG_LV_MEM_SIZE=22528
 CONFIG_LV_ATTRIBUTE_FAST_MEM_USE_IRAM=y
 CONFIG_LV_FONT_MONTSERRAT_20=y
 CONFIG_LV_FONT_MONTSERRAT_28=y
@@ -61,6 +60,23 @@ CONFIG_LV_COLOR_SCREEN_TRANSP=y
 
 # The function settings panel keeps its widgets alive while hidden, and the
 # standby page is built on top of it; 20 KiB left only ~0 B free in the LVGL
-# pool after both existed. 22528 B keeps >= 2 KiB headroom for a frame.
+# pool after both existed. 24576 B keeps >= 2 KiB headroom for a frame.
 # Screen rotation is done in the flush callback (PARTIAL render mode), so the
 # LVGL matrix transform stays disabled.
+#
+# 旋转后整屏重绘是 LVGL 池的峰值时刻。实测（22528 B、本工程 UI 全开）：
+# 重绘峰值 free=440 / biggest=280 B，而圆角 AA mask 需要 (半径+1)*16 B，
+# 亮度旋钮半径 22 就要 368 B → lv_draw_sw_mask.c 分配失败。LVGL 9.6 会把
+# circle 缓存项留成 "radius 已写、指针 NULL" 的毒化状态，下一次同半径取到它
+# 就在 NULL+8 取值（Load access fault），现象正是"旋转后画面割裂 -> 白屏 ->
+# 重启回主界面"。
+#
+# 治本做法是让重绘期间根本不需要新分配：本工程 UI 只用到 6 种圆角半径
+# （7/17/18/19/20/22，其中 22 是 44 px 亮度旋钮的 LV_RADIUS_CIRCLE），而默认
+# 缓存只有 4 项，每次重绘都在驱逐+重新分配。把缓存扩到 8 项后所有半径都在
+# 首次绘制时建好并常驻，旋转重绘全程命中缓存、零分配，毒化路径不可达。
+# 池子再加 3 KiB 作余量：给其它瞬时分配留出空间，同时保证 BLE 起来后 internal
+# free 仍有 ~13 KiB、界面建好后 ~8.4 KiB（实测基线 17136 / 12264 各减 3072），
+# 都还在 8 KiB 下限之上。
+CONFIG_LV_MEM_SIZE=25600
+CONFIG_LV_DRAW_SW_CIRCLE_CACHE_SIZE=8

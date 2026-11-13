@@ -86,7 +86,7 @@ extern "C" lv_display_t *board_display(void)
 
 extern "C" int board_display_rotation_set(int degrees)
 {
-    return Lvgl_SetDisplayRotation(degrees);
+    return Lvgl_RequestDisplayRotation(degrees);
 }
 
 extern "C" int board_display_rotation(void)

@@ -35,8 +35,9 @@ lv_display_t *board_display(void);
  * whole UI 90 degrees counter-clockwise. It is a display level rotation, so it
  * applies to both the normal page and the standby page at once and survives
  * page switches. RAM only: no NVS read or write, a power cycle is back at 0.
- * Returns the rotation that is actually applied. Call with the LVGL lock held
- * (app_ui calls it from the settings panel's button callback). */
+ * 只登记请求：真正的面板写入由 BSP 的 LVGL 定时器在没有帧在飞时完成，所以
+ * 从按钮回调里调用是安全的（不会在 QSPI 传输中改 MADCTL）。返回请求的目标
+ * 角度；实际生效角度用 board_display_rotation() 读。调用时需持有 LVGL 锁。 */
 int board_display_rotation_set(int degrees);
 int board_display_rotation(void);
 

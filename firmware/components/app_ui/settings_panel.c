@@ -77,6 +77,7 @@ static lv_display_t *panel_display;
 
 static bool panel_open;
 static bool panel_built;
+static int rotate_target;
 
 static bool swipe_tracking;
 static lv_point_t swipe_start;
@@ -161,14 +162,29 @@ static void close_clicked_cb(lv_event_t *event)
     settings_panel_close();
 }
 
+/*
+ * ROTATE 按钮：只登记请求，不动硬件。真正的 MADCTL 写入由 BSP 在"没有帧在飞"
+ * 的 LVGL tick 里做，所以这里绝不会在 QSPI 像素传输中途改面板寄存器。
+ * rotate_target 跟着目标角度走，连按两次也不会因为上一次还没生效而少转一格；
+ * 真正的生效角度由 BSP 记录，可用 board_display_rotation() 读。
+ */
 static void rotate_clicked_cb(lv_event_t *event)
 {
-    (void)event;
-    int next = (board_display_rotation() + 90) % 360; /* 90 deg CCW per press */
-    int applied = board_display_rotation_set(next);
+    int applied;
 
-    if (rotate_label != NULL) lv_label_set_text_fmt(rotate_label, "%d deg", applied);
-    ESP_LOGI(TAG, "settings: rotation -> %d", applied);
+    (void)event;
+    rotate_target = (rotate_target + 90) % 360;
+    applied = board_display_rotation_set(rotate_target);
+    if (applied != rotate_target)
+    {
+        rotate_target = applied;
+    }
+    if (rotate_label != NULL)
+    {
+        lv_label_set_text_fmt(rotate_label, "%d deg", applied);
+    }
+    app_ui_note_activity();
+    ESP_LOGI(TAG, "settings: rotation request %d (applied %d)", rotate_target, applied);
 }
 
 static lv_obj_t *panel_label(lv_obj_t *parent, const char *text, const lv_font_t *font,
@@ -413,6 +429,7 @@ void settings_panel_open(void)
     panel_open = true;
     swipe_tracking = false;
     close_tracking = false;
+    rotate_target = board_display_rotation();
 
     brightness_refresh_widgets();
     panel_show(true);

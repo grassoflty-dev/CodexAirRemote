@@ -17,9 +17,17 @@ static const char *TAG = "lvgl_bsp";
  * flush_ready 不会再来了，必须放弃等待而不是自旋到死。 */
 #define FLUSH_WAIT_TIMEOUT_MS 100
 
+/* 旋转请求的消费周期：20 ms 一次，比一帧的传输时间短，用户感觉不到延迟。 */
+#define ROTATION_TICK_MS 20
+
 static lv_display_t *disp = NULL;
 static DisplayPort *disp_port = NULL;
 static int display_rotation = 0;
+/* 旋转请求：按钮回调只置 pending_rotation，由 rotation_timer_cb() 在 LVGL
+ * tick 里、确认没有帧在飞之后才真正写 MADCTL。 */
+static volatile int pending_rotation = 0;
+static volatile bool rotation_pending = false;
+static unsigned flush_wait_timeouts = 0;
 
 /*
  * 屏幕旋转由 SH8601 的 MADCTL(0x36) 在硬件里完成，软件不再碰像素：
@@ -73,6 +81,7 @@ static void flush_wait_timeout_cb(lv_display_t *display)
     {
         if (lv_tick_elaps(start) >= FLUSH_WAIT_TIMEOUT_MS)
         {
+            flush_wait_timeouts++;
             ESP_LOGE(TAG, "flush_wait: display %p (%dx%d) still flushing after %d ms, frame dropped",
                      (void *)display, (int)lv_display_get_horizontal_resolution(display),
                      (int)lv_display_get_vertical_resolution(display), FLUSH_WAIT_TIMEOUT_MS);
@@ -95,10 +104,15 @@ extern "C" int Lvgl_GetDisplayRotation(void)
 
 /*
  * 设置屏幕方向：先写面板 MADCTL（硬件旋转），再让 LVGL 更新旋转状态并整屏
- * 重绘。写失败时保持原方向，返回当前真正生效的角度。调用时必须持有 LVGL 锁。
+ * 重绘，旧像素全部作废。MADCTL 是 QSPI 写命令，和像素流不能交叠，所以这里
+ * 会先等当前帧的 DMA 传完（只等传输，不等 LCD 刷新）。写失败时保持原方向，
+ * 返回当前真正生效的角度。必须持有 LVGL 锁；运行中改方向请走
+ * Lvgl_RequestDisplayRotation()。
  */
 extern "C" int Lvgl_SetDisplayRotation(int degrees)
 {
+    lv_mem_monitor_t mon;
+
     if (disp == NULL || disp_port == NULL)
     {
         ESP_LOGE(TAG, "rotation: display not ready");
@@ -112,6 +126,11 @@ extern "C" int Lvgl_SetDisplayRotation(int degrees)
     }
     degrees = (degrees / 90) * 90;
 
+    if (disp->flushing)
+    {
+        flush_wait_timeout_cb(disp);
+    }
+
     if (disp_port->Set_Rotate((uint16_t)degrees) != ESP_OK)
     {
         ESP_LOGE(TAG, "rotation: MADCTL write failed, keeping %d deg", display_rotation);
@@ -120,16 +139,61 @@ extern "C" int Lvgl_SetDisplayRotation(int degrees)
 
     display_rotation = degrees;
     lv_display_set_rotation(disp, lvgl_rotation_of(degrees));
-
-    /* 面板把整幅画面换了位置，旧像素全部作废，必须整屏重绘。 */
     lv_obj_invalidate(lv_display_get_screen_active(disp));
 
-    ESP_LOGI(TAG, "rotation -> %d deg via SH8601 MADCTL 0x%02x, logical %dx%d",
+    lv_mem_monitor(&mon);
+    ESP_LOGI(TAG, "rotation -> %d via MADCTL 0x%02x, logical %dx%d, flush_wait_timeouts=%u",
              display_rotation, (unsigned)disp_port->Get_Madctl(),
              (int)lv_display_get_horizontal_resolution(disp),
-             (int)lv_display_get_vertical_resolution(disp));
+             (int)lv_display_get_vertical_resolution(disp), flush_wait_timeouts);
+    ESP_LOGI(TAG, "rotation: lvgl free=%u biggest=%u before full repaint",
+             (unsigned)mon.free_size, (unsigned)mon.free_biggest_size);
 
     return display_rotation;
+}
+
+/*
+ * 请求改方向：在触摸事件回调里调用，只置位，不碰面板寄存器（此时可能正有
+ * 一帧 QSPI 像素在飞，改 MADCTL 会让面板显示错位甚至白屏）。
+ */
+extern "C" int Lvgl_RequestDisplayRotation(int degrees)
+{
+    degrees %= 360;
+    if (degrees < 0)
+    {
+        degrees += 360;
+    }
+    degrees = (degrees / 90) * 90;
+
+    pending_rotation = degrees;
+    rotation_pending = true;
+
+    return degrees;
+}
+
+/*
+ * 消费旋转请求：必须是"没有帧在飞"的 tick 才动硬件，否则推迟到下一个 tick，
+ * 不 busy-wait。顺序固定为 写 MADCTL -> lv_display_set_rotation() -> 整屏
+ * invalidate，这样逻辑坐标和面板方向在同一帧里一起换，用户看不到中间态。
+ */
+static void rotation_timer_cb(lv_timer_t *timer)
+{
+    int degrees;
+
+    (void)timer;
+    if (!rotation_pending || disp == NULL || disp_port == NULL)
+    {
+        return;
+    }
+
+    if (disp->flushing)
+    {
+        return;
+    }
+
+    degrees = pending_rotation;
+    rotation_pending = false;
+    Lvgl_SetDisplayRotation(degrees);
 }
 
 esp_err_t Lvgl_lock(int timeout_ms)
@@ -214,6 +278,7 @@ void Lvgl_PortInit(DisplayPort &display) {
     /* 旋转在面板里做，这里只保留 adapter 自己的刷屏回调（它在 SPI 传输完成
      * 的中断里回调 flush_ready）；另外给 flush 等待加 100 ms 超时兜底。 */
     lv_display_set_flush_wait_cb(disp, flush_wait_timeout_cb);
+    lv_timer_create(rotation_timer_cb, ROTATION_TICK_MS, NULL);
     ESP_LOGI(TAG, "display: %dx%d, render mode %d, draw buf %u B, rotation via SH8601 MADCTL",
              (int)BSP_LCD_H_RES, (int)BSP_LCD_V_RES, (int)lv_display_get_render_mode(disp),
              (unsigned)lv_display_get_draw_buf_size(disp));
