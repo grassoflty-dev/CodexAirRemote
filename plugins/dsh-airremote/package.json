@@ -1,6 +1,6 @@
 {
   "name": "dsh-airremote",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "DSH plugin for Codex Air Remote: exposes the ESP32-C6 board as a virtual microphone for the official DSH voice-input plugin (board PCM over WSS, local recognition, draft write), plus board flashing and provisioning.",
   "license": "MIT",
   "type": "module",
