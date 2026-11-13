@@ -87,9 +87,11 @@ static lv_indev_t *touch_indev;
 static bool standby_active;
 static volatile uint32_t last_activity;
 static voice_state_t last_voice_seen = VOICE_IDLE;
+#if APP_UI_STANDBY_TEST_HOOK
 /* Set by the console test hook (app_ui.h) and consumed in render(). */
 static volatile bool standby_tap_request;
 static volatile char debug_click_request;
+#endif
 /* 强制待机请求：由第三键或 app_ui_standby_now() 置位，render() 在 LVGL
  * 上下文里执行，避免按键任务直接碰 LVGL。 */
 static volatile bool standby_request;
@@ -603,6 +605,7 @@ static void render(lv_timer_t *timer)
         note_activity();
     }
 
+#if APP_UI_STANDBY_TEST_HOOK
     /* Console test hook: inject the same input-device press a finger makes. */
     if (standby_tap_request) {
         standby_tap_request = false;
@@ -612,6 +615,7 @@ static void render(lv_timer_t *timer)
             lv_indev_send_event(touch_indev, LV_EVENT_RELEASED, standby_page);
         }
     }
+#endif
 
     /* 真实触摸唤醒：indev 回调只置位，这里（LVGL 循环内）才隐藏页面、把电量
      * 标签挂回主屏幕，避免在输入派发过程中改对象树。 */
@@ -638,6 +642,7 @@ static void render(lv_timer_t *timer)
         force_standby_step();
     }
 
+#if APP_UI_STANDBY_TEST_HOOK
     /* Console test hook: play the click a finger would make on Gyro/Voice. */
     if (debug_click_request) {
         char which = debug_click_request;
@@ -648,6 +653,7 @@ static void render(lv_timer_t *timer)
             lv_obj_send_event(button, LV_EVENT_SHORT_CLICKED, NULL);
         }
     }
+#endif
 
     /* 电量每秒刷新一次：主界面与待机页共用同一个控件（待机时该标签被挂到
      * 待机页上，见 enter_standby），所以待机页没有自己的轮询定时器；待机页
@@ -1091,6 +1097,7 @@ bool app_ui_standby_active(void)
     return standby_active;
 }
 
+#if APP_UI_STANDBY_TEST_HOOK
 void app_ui_standby_tap(void)
 {
     standby_tap_request = true;
@@ -1100,4 +1107,5 @@ void app_ui_debug_click(char which)
 {
     debug_click_request = which;
 }
+#endif
 
