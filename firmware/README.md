@@ -135,12 +135,20 @@ windows\Flash.cmd
 | --- | --- | --- |
 | `AR1?` | `AR1 READY <flags> <12 位 hex MAC>` | 查询就绪状态与蓝牙 MAC；板级初始化完成后才响应 |
 | `AR1W <ssid hex> <password hex>` | `AR1 WIFI OK` / `AR1 WIFI INVALID` / `AR1 WIFI STORE FAILED` | 把 Wi-Fi 配置写入 NVS |
-| `AR1V` | `AR1 VOICE STARTED` / `AR1 VOICE BUSY` | **临时调试入口**：经 USB 启动一次语音会话（无头实测用，见 `docs/pending-hardware-validation.md`）；最终交付前再决定是否移除 |
 | `AR1T <unix 秒>` | `AR1T OK <unix>` / `AR1T ERR` | 设置板端时间：把 **UTC** 写入 PCF85063A（掉电保持）并同步系统时钟；屏幕立即刷新 |
 | `AR1Z <分钟>` | `AR1Z OK <分钟>` / `AR1Z ERR` | 设置**显示时区**（东为正，-720…+840，如 `480`=UTC+8、`540`=UTC+9、`0`=UTC），写入 NVS 持久化 |
-| `AR1S` | `AR1 STANDBY <0\|1>` | **临时调试入口**：查询当前是否停在待机页（无头实测用，随 `APP_UI_STANDBY_TEST_HOOK` 一起移除） |
-| `AR1S TAP` | `AR1 STANDBY TAP` | **临时调试入口**：播放一次「输入设备按下」，等价于手指点一下待机页；脚本无法真的按屏幕，故用它验证唤醒 |
-| `AR1B GYRO` / `AR1B VOICE` | `AR1 BUTTON GYRO` / `AR1 BUTTON VOICE` | **临时调试入口**：播放一次对应按钮的点击，用于无手操作时触发陀螺仪（含校准弹窗）或语音会话 |
+
+**发布镜像只含上面四条命令**（`AR1?` / `AR1W` / `AR1T` / `AR1Z`）。下面三条调试命令已从发布镜像移除，
+响应说明仅作历史保留，烧进板子的镜像对它们不作任何回应：
+
+| 已移除的命令 | 原响应 | 原用途 |
+| --- | --- | --- |
+| `AR1V` | `AR1 VOICE STARTED` / `AR1 VOICE BUSY` | **已从发布镜像移除**：经 USB 启动一次语音会话，供无头实测使用；触发语音请直接点屏幕上的 Voice |
+| `AR1S` / `AR1S TAP` | `AR1 STANDBY <0\|1>` / `AR1 STANDBY TAP` | **已从发布镜像移除**：查询是否停在待机页 / 播放一次「输入设备按下」，验证待机唤醒用 |
+| `AR1B GYRO` / `AR1B VOICE` | `AR1 BUTTON GYRO` / `AR1 BUTTON VOICE` | **已从发布镜像移除**：播放一次对应按钮的点击，用于无手操作时触发陀螺仪（含校准弹窗）或语音会话 |
+
+后三条源码仍在（`AR1S`/`AR1S TAP`/`AR1B` 由 `APP_UI_STANDBY_TEST_HOOK` 控制，发布版固定为 `0`；
+`AR1V` 的处理分支已从 `provision.c` 删除），需要时改宏重编即可恢复其中前三条。
 
 - `<flags>` 是位掩码：bit0 = IMU 就绪，bit1 = BLE 就绪，bit2 = 语音就绪；`7` 表示全部就绪，`0` 表示板级初始化失败。
 - **RTC 存的是 UTC**：`AR1T` 写入什么就是什么，不做任何时区换算。屏幕显示 = RTC 里的 UTC + `AR1Z` 偏移（默认 `480` = UTC+8，存于 NVS namespace `airremote_time`、key `tz_min`）。**换时区只需重发 `AR1Z`，不用重发时间**；反过来说，改时区偏移不会改变已经写进 RTC 的绝对时间。
@@ -249,7 +257,7 @@ C6 没有 PSRAM，所有缓冲都在 512 KB 内部 SRAM 中，是整个移植最
 | --- | --- |
 | 语音 PCM 环形缓冲 | 16 KB（`voice.c` 中 `BUFFER_BYTES`，约 0.5 秒单声道；启动时分配） |
 | LVGL 绘制缓冲 | 480 × 8 × 2 = 7.5 KB，单缓冲 |
-| LVGL 堆 | 20 KB（`CONFIG_LV_MEM_SIZE=20480`） |
+| LVGL 堆 | 25 KB（`CONFIG_LV_MEM_SIZE=25600`） |
 | LVGL 任务栈 | 8 KB（优先级 8） |
 | `main` / `mic_capture` 任务栈 | 8 KB / 8 KB |
 | `voice` / `air_mouse` / `usb_config` 任务栈 | 6 KB / 4 KB / 4 KB |
@@ -264,7 +272,7 @@ Wi-Fi 与 BLE 交替使用是本项目在 512 KB 无 PSRAM 下的核心约束：
 
 ### 语音会话起不来（尚未修复）
 
-**现象**：点 Voice（或 USB 发 `AR1V`）后语音会话建立不起来，串口日志停在
+**现象**：点 Voice（无头实测曾用 USB 命令 `AR1V`，该命令已从发布镜像移除）后语音会话建立不起来，串口日志停在
 `PCM buffer allocation failed`，不会进入 `AUTH`/`READY2`。
 
 **根因**：`voice_task` 里顺序是「先 `audio_open()` 申请 16 KB 连续块，再 `ble_mouse_release()`」。
@@ -280,10 +288,12 @@ BLE 起来后内部堆碎片化，16 KB 连续块拿不到，`audio_open()` 直�
 **影响**：待机页的「语音占用」（`APP_BUSY_VOICE`）目前只有 `app_busy` 占用模型的日志验证
 （进入语音时 busy 位置起、60 秒待机计时停走），**没有跑通一次真实语音会话**；待修好后再补端到端实测。
 
-### 发布前必须关掉待机页调试钩子
+### 发布镜像的调试钩子状态
 
-`components/app_ui/app_ui.h` 的 `APP_UI_STANDBY_TEST_HOOK` 发布前必须改成 **0**，否则会带上
-`AR1S` / `AR1S TAP` / `AR1B GYRO|VOICE` 这三个临时调试命令（见「USB 控制台与配网」命令表）。
+`components/app_ui/app_ui.h` 的 `APP_UI_STANDBY_TEST_HOOK` 已固定为 **0**，发布镜像不含
+`AR1S` / `AR1S TAP` / `AR1B GYRO|VOICE` 这三个临时调试命令；`AR1V` 的串口触发分支也已从
+`components/app_provision/provision.c` 删除。发布镜像只保留 `AR1?` / `AR1W` / `AR1T` / `AR1Z`
+四条命令（见「USB 控制台与配网」命令表）。
 
 ## 常见问题
 
@@ -343,7 +353,7 @@ env/                     # 环境配置（gitignore）：ESP-IDF 5.5.5 + 工具�
 | LVGL UI（状态/Gyro/Voice/A/B、亮度息屏、左上角时钟、待机页） | `app_ui` | `components/app_ui/app_ui.c`、`components/app_ui/fonts/ui_font_standby_160.c` |
 | 功能占用（语音/陀螺仪/串口命令，待机计时的唯一开关） | `app_busy` | `components/app_busy/app_busy.c`、`include/app_busy.h` |
 | 语音链路（TLS1.2/WSS、单播发现、WIFI_PS_NONE、PCM 帧） | `app_voice` | `voice.c`、`voice.h` |
-| 配网 / 串口命令（含 AR1V 语音触发） | `app_provision` | `provision.c`、`provision.h` |
+| 配网 / 串口命令（`AR1?` / `AR1W` / `AR1T` / `AR1Z`） | `app_provision` | `provision.c`、`provision.h` |
 | 音频编解码（ES8311/ES7210、I2S TDM） | `bsp_board`/`codec_board` | `codec_bsp.cpp`、`codec_board/` |
 
 ## 环境与构建

@@ -15,8 +15,6 @@
 #include "freertos/task.h"
 #include "nvs.h"
 #include "rtc_board.h"
-/* Serial voice trigger; declared locally to keep app_voice independent. */
-esp_err_t voice_start(void);
 
 static const char *TAG = "usb_config";
 static const char *KEY = "wifi";
@@ -193,11 +191,6 @@ static void serial_task(void *unused)
                 if (!overflow && strcmp(line, "AR1S TAP") == 0) standby_tap();
                 if (!overflow && strncmp(line, "AR1B ", 5) == 0) standby_button(line + 5);
 #endif
-                /* TEMP: start a voice session over USB for memory/protocol
-                 * testing while the touch panel is not being operated. */
-                if (!overflow && strcmp(line, "AR1V") == 0) {
-                    printf("AR1 VOICE %s\n", voice_start() == ESP_OK ? "STARTED" : "BUSY");
-                }
                 length = 0;
                 overflow = false;
                 memset(line, 0, sizeof(line));

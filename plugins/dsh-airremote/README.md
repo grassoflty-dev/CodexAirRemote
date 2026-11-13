@@ -253,7 +253,7 @@ node scripts/bundle-firmware.mjs --version 0.7.0   # 打固件时显式给固件
 - 固件**没有**缓存：内置镜像与 manifest 随插件包走（`plugins/dsh-airremote/firmware/`），运行时
   只读、流式下发，不往 `~/.dsh/airremote/` 写任何固件文件。
 
-真实板子使用前先在板子上点 **Voice**（或 USB 发 `AR1V`），让板子进入语音会话并广播。
+真实板子使用前先在板子上点 **Voice**，让板子进入语音会话并广播（`AR1V` 串口触发已从发布镜像移除）。
 
 ## 测试
 

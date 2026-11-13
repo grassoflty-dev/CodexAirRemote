@@ -11,5 +11,10 @@ The repository references these dependencies rather than vendoring the SDK.
 This is an independent community project. OpenAI, Codex, Espressif and Waveshare
 names identify compatible products; no affiliation or endorsement is claimed.
 
-No OpenAI desktop application, model, virtual audio driver, private credentials,
-or device-specific firmware image is included in the source distribution.
+This directory does ship one prebuilt binary: codex_air_remote-merged.bin, the merged
+flash image of this repository's own firmware (sources in the repository's firmware/
+directory, Apache License 2.0). It is bundled so the plugin can flash a board without
+a toolchain; see manifest.json for its version, size and sha256.
+
+No OpenAI desktop application, model, virtual audio driver or private credentials are
+included in this package.

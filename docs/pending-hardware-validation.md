@@ -94,8 +94,9 @@ I (xxx) ble_mouse: BLE advertising started
 
 ## 5. 阶段 D：语音链路（task-2 剩余）
 
-> `AR1V` 串口调试入口本轮**保留**（`firmware/main/provision.c`），后续实测继续用它无头触发语音会话；
-> 最终交付前再决定是否删除。
+> **`AR1V` 串口调试入口已从发布镜像移除**（固件 0.7.1）：发布镜像现在只响应 `AR1?` / `AR1W` / `AR1T` / `AR1Z`。
+> 下面 D2 / D5 里「经串口发 `AR1V`」的步骤在 0.7.1 上**无法执行**，触发语音只能点屏幕上的 `Voice`；
+> 若要恢复无头自动触发，需临时重编一版带 `AR1V` 的工程镜像（不要拿来做发布镜像）。
 
 | 步骤 | 命令 | 期望 |
 | --- | --- | --- |
@@ -132,7 +133,7 @@ I (xxx) ble_mouse: BLE advertising started
 | E2 协议自检 | `cd windows\host; ..\.venv\Scripts\python.exe -u offline_check.py` | `Encrypted audio, Codex submit/draft/cancel/legacy, DSH draft/cancel/manual/setup, missing cable, and ambiguous send passed.` |
 | E3 打包 | `powershell -NoProfile -ExecutionPolicy Bypass -File .\windows\Build-App.ps1` | 生成 `windows\app\CodexAirRemote.exe`，无错误 |
 | E4 EXE 自检（需 Codex 登录） | `windows\app\CodexAirRemote.exe --test-report windows\.local\self-test.json` | JSON `{"ok": true}`（Codex 未登录会返回错误说明，属用户环境项） |
-| E5 清理决策 | 决定 `AR1V`、`lv_mem` 打印、httpd DEBUG 日志的最终去留 | 若删除 `AR1V`，需在本清单里补一条无头触发替代方案，否则 D2 无法自动执行 |
+| E5 清理决策 | 决定 `AR1V`、`lv_mem` 打印、httpd DEBUG 日志的最终去留 | **已决策并执行（0.7.1）**：`AR1V` 分支已从 `provision.c` 删除，发布镜像不含；D2 的无头自动触发随之中断，改用点 `Voice` 手测（见 §5 开头注） |
 | E6 最终 diff | `git status` / `git diff` | 仅包含预期改动；`git commit`（不 push，除非用户要求） |
 
 ## 7. 期望日志索引（排查用）
@@ -225,7 +226,7 @@ I (xxx) ble_mouse: BLE advertising started
 | 顺序 | 项目 | 怎么测 | 期望 |
 | --- | --- | --- | --- |
 | 1 | 待机页数字 | 静置 60 s（不触摸、不运行 Voice/Gyro） | 黑底出现完整 HH:MM（不再只有冒号），每秒走字，80% 背光；触摸唤醒不误触按钮 |
-| 2 | 语音会话启动 | 点 Voice 或发 AR1V | 不再出现 PCM buffer allocation failed；进入 AUTH/READY2；日志可见 `BT released` 之后 `Wi-Fi ready` |
+| 2 | 语音会话启动 | 点 Voice（`AR1V` 已从发布镜像移除） | 不再出现 PCM buffer allocation failed；进入 AUTH/READY2；日志可见 `BT released` 之后 `Wi-Fi ready` |
 | 3 | 语音失败回滚 | 断网时点 Voice | 会话失败后 BLE 鼠标能恢复（`BT resume`），无 panic |
 | 4 | 陀螺仪滚转 | 空中鼠标模式下只滚转手腕（右侧下压） | 光标不应竖向漂移（旧 bug：dy +1..+7） |
 | 5 | 陀螺仪上下方向 | 前后倾斜 | 上下方向与手势一致（screen_normal/VERTICAL_SIGN 已同时修正） |
@@ -254,6 +255,9 @@ I (xxx) ble_mouse: BLE advertising started
 
 
 ## 13. 语音会话 AR1V 验证（2026-11-11，部分通过）
+
+> 本节记的是 0.7.0 之前用 `AR1V` 无头触发的结果。`AR1V` 已从发布镜像移除（0.7.1），
+> 下面「再 `AR1V`」的步骤只能在临时重编的调试镜像上复现。
 
 | 项目 | 结果 |
 | --- | --- |

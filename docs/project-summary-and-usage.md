@@ -40,7 +40,7 @@
 | 本机 IDF 构建 | ✅ 绿，`firmware/build/codex_air_remote.bin` ≈ 2.32 MB |
 | `env/` 内 IDF 构建 | ✅ 绿，日志 `firmware/build/env-build.log`（0 error） |
 | 架构重构 | ✅ `main/` 仅编排；组件 `bsp_board`、`app_ui`、`app_mouse`、`app_voice`、`app_provision`、`codec_board` |
-| 临时探针清理 | ✅ 已清理（保留 AR1V 串口语音触发，供待实测清单使用） |
+| 临时探针清理 | ✅ 已清理（曾保留的 AR1V 串口语音触发已于固件 0.7.1 移除，发布镜像只剩 AR1?/AR1W/AR1T/AR1Z） |
 | 实机：烧录 / 启动 | ✅ `AR1 READY 7`、`AIRREMOTE UI READY; IMU=1 BLE=1 VOICE=1 PMIC=1`、`BLE HID started`、`BLE advertising started`，无 panic |
 | 实机：屏幕点亮 | ⏳ **待用户确认**（若黑屏，按第 3.7 节切引脚 B 变体） |
 | 实机：触摸/亮度/BLE 配对/鼠标/语音 E2E | ⏳ 待测，见待实测清单 |

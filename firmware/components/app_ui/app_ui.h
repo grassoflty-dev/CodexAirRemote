@@ -16,11 +16,9 @@ void app_ui_set_capabilities(bool mouse_ready, bool ble_ready, bool voice_ready)
  * freshly synced clock is never hidden by a standby switch. */
 void app_ui_refresh_clock(void);
 
-/* Temporary test hook: a script cannot press the panel, so the USB console
- * (AR1S/AR1S TAP) injects the same input-device press a finger produces.
- * Set to 0 to compile the console side out. */
-/* 发布版固定为 0：AR1S / AR1S TAP / AR1B GYRO|VOICE 三个临时调试命令及其注入口
- * 都不编入镜像，只保留真实触摸与第三键路径。 */
+/* 临时调试钩子（历史上是 AR1S / AR1S TAP / AR1B GYRO|VOICE 三个串口命令）。
+ * 置 1 时这些命令与它们调用的注入口才编进镜像；发布版固定为 0，镜像里只剩
+ * 真实触摸与第三键路径。 */
 #define APP_UI_STANDBY_TEST_HOOK 0
 
 /* True while the black standby page with the big clock is showing. */

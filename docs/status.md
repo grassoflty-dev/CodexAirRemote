@@ -21,7 +21,7 @@
 ### 语音 AUTH/READY2 未达成（2026-11-11）
 - 现象：板端关联 Windows 热点失败，`Wi-Fi disconnected, reason 210 = NO_AP_FOUND_W_COMPATIBLE_SECURITY`；
   另外 companion（TLS/WSS 47683）当前未运行。
-- 影响：`AR1V` 只能走到"释放 BLE → 启动 Wi-Fi → 无 AP 回滚"，无法验证 AUTH/READY2 与后续 PCM 上行。
+- 影响：语音会话只能走到"释放 BLE → 启动 Wi-Fi → 无 AP 回滚"，无法验证 AUTH/READY2 与后续 PCM 上行。
 - 待用户选择（三选一，任选其一即可继续）：
   1. 提供可用 **2.4 GHz 路由器 AP** 的 SSID/密码（我用 `AR1W` 配到板子）；
   2. 允许把 Windows 热点改为兼容安全模式（WPA2-PSK）后重试（属热点配置变更，需用户明确同意）；

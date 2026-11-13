@@ -76,7 +76,7 @@
 | --- | --- |
 | 组件版本 | `esp_lcd_sh8601 ^2.0.1`（与出厂 v2.0.1 一致）、`esp_lvgl_adapter ~0.3.0`、`waveshare/esp_lcd_touch_cst9217 ^1.0.4`、`lvgl ^9.5.0` |
 | 目录布局 | 已按官方：`main/` 仅入口，`components/{bsp_board,app_ui?,app_mouse,app_voice,app_provision}` |
-| 临时探针 | 已删除（panel_probe、AR1D/AR1B/AR1R/AR1W/AR1T/AR1X、board_display_fill/diag/reinit）；保留 `AR1V` 串口语音触发（待实测清单依赖，见下） |
+| 临时探针 | 已删除（panel_probe、AR1D/AR1B/AR1R/AR1W/AR1T/AR1X、board_display_fill/diag/reinit）；`AR1V` 串口语音触发当时保留（固件 0.7.1 起已移除） |
 | 编译 | 本机 IDF 与 `env/` 内 IDF 均可编译通过（见验收记录） |
 
 ## 3. 已修复问题清单
@@ -88,7 +88,7 @@
 | 3 | 中 | `board_microphone()` 在组件拆分时被误删 | 已恢复 |
 | 4 | 中 | LVGL 任务栈/绘制缓冲小于同板已验证值 | 对齐为 20KB stack / buffer 12 |
 | 5 | 中 | 工程结构把全部应用代码堆在 `main/` | 拆分为 `app_mouse/app_voice/app_provision`（UI 仍待迁入 `app_ui`，见遗留） |
-| 6 | 低 | 临时诊断代码散落 | 已删除（保留 AR1V 串口语音触发） |
+| 6 | 低 | 临时诊断代码散落 | 已删除（此前保留的 AR1V 串口语音触发已于固件 0.7.1 移除） |
 | 7 | 低 | `provision.c` 与 `voice.c` 相互包含造成组件环依赖 | 改为本地 extern 声明打破环 |
 
 ## 4. 遗留风险（无法静态 100% 确认，需实测）

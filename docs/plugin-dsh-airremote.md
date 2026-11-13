@@ -105,7 +105,7 @@ host 默认读取 `%USERPROFILE%\.dsh\airremote\`：
 
 ### 4.4 使用步骤（真实板子）
 
-1. 板子上点 **Voice**（或 USB 串口发 `AR1V`）启动一次语音会话；
+1. 板子上点 **Voice** 启动一次语音会话（`AR1V` 串口触发已从发布镜像移除）；
 2. 板子释放 BLE、连 Wi-Fi、广播 `AR1A`；
 3. 在 DSH 点官方麦克风按钮；
 4. host 发现板子 → TLS 连接 → AUTH → CAPTURE → 开始收 PCM；
