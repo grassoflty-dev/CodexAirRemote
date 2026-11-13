@@ -1,10 +1,10 @@
 {
   "plugin": "dsh-airremote",
   "chip": "esp32c6",
-  "version": "0.6.1",
-  "commit": "79e8f8e",
+  "version": "0.7.0",
+  "commit": "62315cf",
   "flashOffset": 0,
-  "size": 4695952,
-  "sha256": "1aa210b4825c7359b2596b8d36c5b230107a868f31e95d29797125c914520cd7",
-  "builtAt": "2026-11-12T13:13:49.539Z"
+  "size": 4686736,
+  "sha256": "9237f83e16235e07275885ea52ea92aab8914b556f5fa9c6f9c3f6097e6861e2",
+  "builtAt": "2026-11-13T08:43:24.236Z"
 }
