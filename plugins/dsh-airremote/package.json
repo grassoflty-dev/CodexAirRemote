@@ -14,7 +14,9 @@
     "./client": {
       "types": "./lib/client.d.ts",
       "default": "./lib/client.js"
-    }
+    },
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
   },
   "engines": {
     "node": "^22.19.0 || >=24.0.0",
@@ -28,7 +30,10 @@
     "firmware",
     "scripts/bundle-firmware.mjs",
     "LICENSE",
-    "LICENSE-dsh-ears.txt"
+    "LICENSE-dsh-ears.txt",
+    "locale/*.json",
+    "docs",
+    "icon.svg"
   ],
   "dsh": {
     "bundle": {
