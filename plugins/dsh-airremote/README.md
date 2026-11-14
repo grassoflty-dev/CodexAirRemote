@@ -49,7 +49,8 @@ ESP32-C6 ──WSS 47683──▶ host（TLS 客户端 + UDP 47682 发现）
    ```text
    plugin_manager install_bundle  E:\Develop\airremote-dist\dsh-airremote-0.5.2.tgz
    ```
-3. 到 **Plugins → Installed** 启用 `dsh-airremote`；客户端部分走 HMR 热更，宿主编排部分按界面提示重载页面/重启 DSH。
+3. 到 **Plugins → Installed** 启用 `dsh-airremote`；**host 侧代码安装后 HMR 即生效**（实测新路由不重启也能用），
+   客户端 UI 需要**刷新页面（Ctrl+R）**加载新模块；刷新仍无效再完全重启 DSH。
 
 ### 方式二：从 DSH 插件索引安装（Discover）
 
