@@ -46,11 +46,28 @@ static esp_hid_device_config_t hid_config = {
     .report_maps_len = 1,
 };
 
-static esp_ble_adv_params_t adv_params = {
-    .adv_int_min = 0x40, .adv_int_max = 0x60,
+/* Tiered advertising (see docs): fast for the first 30 s after a disconnect so
+ * the host that comes back into range reconnects in ~1 s, then slow to save
+ * power. The interval unit is 0.625 ms: 0x30..0x60 = 30..60 ms, 0x1E0..0x320 =
+ * 300..500 ms. A connected link keeps the controller out of advertising. */
+#define ADV_FAST_MIN 0x30
+#define ADV_FAST_MAX 0x60
+#define ADV_SLOW_MIN 0x1E0
+#define ADV_SLOW_MAX 0x320
+#define ADV_SLOW_AFTER_US (30 * 1000 * 1000LL)
+
+static esp_ble_adv_params_t adv_params_fast = {
+    .adv_int_min = ADV_FAST_MIN, .adv_int_max = ADV_FAST_MAX,
     .adv_type = ADV_TYPE_IND, .own_addr_type = BLE_ADDR_TYPE_PUBLIC,
     .channel_map = ADV_CHNL_ALL, .adv_filter_policy = ADV_FILTER_ALLOW_SCAN_ANY_CON_ANY,
 };
+static esp_ble_adv_params_t adv_params_slow = {
+    .adv_int_min = ADV_SLOW_MIN, .adv_int_max = ADV_SLOW_MAX,
+    .adv_type = ADV_TYPE_IND, .own_addr_type = BLE_ADDR_TYPE_PUBLIC,
+    .channel_map = ADV_CHNL_ALL, .adv_filter_policy = ADV_FILTER_ALLOW_SCAN_ANY_CON_ANY,
+};
+static esp_timer_handle_t adv_slow_timer;
+static atomic_bool adv_slow_active;
 
 static nvs_handle_t ccc_nvs;
 static bool ccc_known;
@@ -96,7 +113,12 @@ static void ccc_load(void)
     ESP_LOGI(TAG, "CCCD load known=%d h0=%u h1=%u", ccc_known ? 1 : 0,
              ccc_handles[0], ccc_handles[1]);
 }
-static atomic_bool hid_started, advertising, releasing;/* The controller can answer the advertising-enable HCI command with "memory
+static atomic_bool hid_started, advertising, releasing;
+/* Last connected host, learned from the GATTS connect event; used for the
+ * host switch/reconnect logs and to address the link explicitly. */
+static esp_bd_addr_t s_remote_bda;
+static bool s_remote_known;
+static atomic_bool s_reconnect_pending;/* The controller can answer the advertising-enable HCI command with "memory
  * full" right after the HID service is created. Retrying with a short backoff
  * recovers from that transient failure; success is only reported when the
  * completion event says so. */
@@ -136,7 +158,11 @@ static void gatts_event_probe(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if
     switch (event) {
     case ESP_GATTS_CONNECT_EVT:
         s_gatts_if = gatts_if;
-        ESP_LOGI(TAG, "GATTS connected conn_id=%u", param->connect.conn_id);
+        memcpy(s_remote_bda, param->connect.remote_bda, sizeof(s_remote_bda));
+        s_remote_known = true;
+        ESP_LOGI(TAG, "GATTS connected conn_id=%u from %02x:%02x:%02x:%02x:%02x:%02x",
+                 param->connect.conn_id, s_remote_bda[0], s_remote_bda[1], s_remote_bda[2],
+                 s_remote_bda[3], s_remote_bda[4], s_remote_bda[5]);
         break;
     case ESP_GATTS_DISCONNECT_EVT:
         ESP_LOGI(TAG, "GATTS disconnected reason=0x%x", param->disconnect.reason);
@@ -187,6 +213,33 @@ static esp_err_t register_gatts_callback(void)
  * device), so only log it here. When the event did arrive but advertising was
  * skipped because the advertising data was not ready yet, retry the (idempotent)
  * advertise() call. */
+/* Two computers are used with the same board, so the multi-bond state is the
+ * thing to watch: log how many bonds the board really keeps and their
+ * addresses at boot, after pairing and after a disconnect. */
+static void log_bonds(const char *when)
+{
+    int total = esp_ble_get_bond_device_num();
+    if (total < 0) {
+        ESP_LOGW(TAG, "BT bonds (%s): query failed %d", when, total);
+        return;
+    }
+    ESP_LOGI(TAG, "BT bonds (%s): %d", when, total);
+    if (total == 0) return;
+
+    int want = total > 8 ? 8 : total;
+    esp_ble_bond_dev_t list[8];
+    int got = want;
+    if (esp_ble_get_bond_device_list(&got, list) != ESP_OK) {
+        ESP_LOGW(TAG, "BT bonds (%s): list failed", when);
+        return;
+    }
+    for (int i = 0; i < got; i++) {
+        ESP_LOGI(TAG, "  bond[%d] %02x:%02x:%02x:%02x:%02x:%02x", i,
+                 list[i].bd_addr[0], list[i].bd_addr[1], list[i].bd_addr[2],
+                 list[i].bd_addr[3], list[i].bd_addr[4], list[i].bd_addr[5]);
+    }
+}
+
 /* Restore the server-side CCCD after a reboot: the host keeps its subscription
  * for a bonded device and does not rewrite the CCCD, but the GATT server starts
  * from zero, so esp_hid would reject every report. */
@@ -222,15 +275,45 @@ static void advertise_fallback_cb(void *arg)
     advertise();
 }
 
+static void adv_slow_cb(void *arg)
+{
+    (void)arg;
+    if (atomic_load(&releasing) || atomic_load(&linked)) return;
+    /* Slow down: stop the fast advertisement and restart with the slow
+     * parameters. Nothing else changes, so a host that comes into range still
+     * finds the board, just a little later. */
+    esp_ble_gap_stop_advertising();
+    atomic_store(&advertising, false);
+    atomic_store(&adv_slow_active, true);
+    ESP_LOGI(TAG, "adv: slow interval %d-%d ms (after 30 s, reconnect latency ~1-2 s)",
+             (int)(ADV_SLOW_MIN * 625 / 1000), (int)(ADV_SLOW_MAX * 625 / 1000));
+    advertise();
+}
+
+static void start_adv_timer(void)
+{
+    if (adv_slow_timer == NULL) return;
+    esp_timer_stop(adv_slow_timer);
+    if (!atomic_load(&adv_slow_active)) esp_timer_start_once(adv_slow_timer, ADV_SLOW_AFTER_US);
+}
+
 static void advertise(void)
 {
     if (atomic_load(&hid_started) && atomic_load(&advertising_data_ready) == 3 &&
         !atomic_load(&linked) && !atomic_exchange(&advertising, true)) {
-        esp_err_t err = esp_ble_gap_start_advertising(&adv_params);
+        esp_ble_adv_params_t *params = atomic_load(&adv_slow_active) ? &adv_params_slow
+                                                                    : &adv_params_fast;
+        esp_err_t err = esp_ble_gap_start_advertising(params);
         if (err != ESP_OK) {
             atomic_store(&advertising, false);
             ESP_LOGW(TAG, "Advertise: %s", esp_err_to_name(err));
             schedule_adv_retry();
+        } else {
+            ESP_LOGI(TAG, "adv: %s interval %d-%d ms",
+                     atomic_load(&adv_slow_active) ? "slow" : "fast",
+                     (int)(params->adv_int_min * 625 / 1000),
+                     (int)(params->adv_int_max * 625 / 1000));
+            start_adv_timer();
         }
     }
 }
@@ -280,8 +363,10 @@ static void gap_event(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *data
     case ESP_GAP_BLE_AUTH_CMPL_EVT:
         if (data->ble_security.auth_cmpl.success) {
             ESP_LOGI(TAG, "BLE pairing complete");
+            log_bonds("paired");
         } else {
             ESP_LOGW(TAG, "Pairing failed: %u", data->ble_security.auth_cmpl.fail_reason);
+            log_bonds("pair-failed");
         }
         break;
     default:
@@ -302,6 +387,15 @@ static void hid_event(void *arg, esp_event_base_t base, int32_t event, void *dat
         atomic_fetch_add(&generation, 1);
         atomic_store(&linked, true);
         atomic_store(&reports_ready, false);
+        if (adv_slow_timer) esp_timer_stop(adv_slow_timer);
+        atomic_store(&adv_slow_active, false);
+        if (atomic_load(&s_reconnect_pending) && s_remote_known) {
+            ESP_LOGI(TAG, "host: reconnected from %02x:%02x:%02x:%02x:%02x:%02x",
+                     s_remote_bda[0], s_remote_bda[1], s_remote_bda[2],
+                     s_remote_bda[3], s_remote_bda[4], s_remote_bda[5]);
+        }
+        atomic_store(&s_reconnect_pending, false);
+        log_bonds("connected");
         if (ccc_known) {
             /* Windows keeps its subscription across device reboots even though
              * our GATT server starts with a cleared CCCD; restore the attribute
@@ -315,7 +409,10 @@ static void hid_event(void *arg, esp_event_base_t base, int32_t event, void *dat
         atomic_store(&linked, false);
         atomic_store(&advertising, false);
         atomic_store(&reports_ready, false);
-        ESP_LOGW(TAG, "BLE host disconnected");
+        atomic_store(&adv_slow_active, false); /* back to fast advertising */
+        atomic_store(&s_reconnect_pending, true);
+        ESP_LOGW(TAG, "BLE host disconnected, fast advertising resumes");
+        log_bonds("disconnected");
         advertise();
         break;
     default:
@@ -427,6 +524,11 @@ esp_err_t ble_mouse_init(void)
         .callback = adv_retry_cb, .name = "ble_adv_retry",
     };
     if (esp_timer_create(&retry_args, &adv_retry) != ESP_OK) adv_retry = NULL;
+    const esp_timer_create_args_t slow_args = {
+        .callback = adv_slow_cb, .name = "ble_adv_slow",
+    };
+    if (esp_timer_create(&slow_args, &adv_slow_timer) != ESP_OK) adv_slow_timer = NULL;
+    log_bonds("boot");
     err = esp_timer_create(&fallback_args, &advertise_fallback);
     if (err != ESP_OK) {
         advertise_fallback = NULL;
