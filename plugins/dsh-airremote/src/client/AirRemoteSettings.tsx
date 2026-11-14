@@ -1,20 +1,34 @@
 import { useState } from 'react'
 import { DevBoardTime } from './DevBoardTime.js'
 import { FirmwareFlash } from './FirmwareFlash.js'
+import type { FlashSocket } from './flash-socket.js'
 
 /**
  * Single settings page for the plugin: board time on top, firmware flashing
  * below. Both blocks keep their own state and host routes; this component only
  * puts them on one page so Settings shows one "Air remote" entry instead of two.
  */
-export function AirRemoteSettings() {
+export function AirRemoteSettings({
+  openSocket,
+  socketCarrier,
+  socketBase
+}: {
+  openSocket?: () => FlashSocket
+  socketCarrier?: string
+  socketBase?: string
+}) {
   /** 「扫描设备」找到的端口：时间同步优先用它，避免再次自动探测。 */
   const [board, setBoard] = useState<string | null>(null)
   return (
     <section style={{ display: 'flex', flexDirection: 'column', gap: '20px', padding: '4px 2px' }}>
       <DevBoardTime port={board} />
       <div aria-hidden="true" style={{ height: '1px', background: 'rgba(128, 128, 128, 0.25)' }} />
-      <FirmwareFlash onBoardChange={setBoard} />
+      <FirmwareFlash
+        onBoardChange={setBoard}
+        openSocket={openSocket}
+        socketCarrier={socketCarrier}
+        socketBase={socketBase}
+      />
     </section>
   )
 }

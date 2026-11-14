@@ -6,6 +6,23 @@ window.__ModuleLoader__.load({
 		Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
 		let react = require("react");
 		let react_jsx_runtime = require("react/jsx-runtime");
+		// src/client/flash-socket.ts
+		/** 与 DSH 官方实现相同的 base 解析顺序；空串表示拿不到。 */
+		function transportBase() {
+			try {
+				const fromTransport = globalThis.__DSH_TRANSPORT__?.streamBaseUrl;
+				if (typeof fromTransport === "string" && fromTransport.trim() !== "") return fromTransport;
+			} catch {}
+			return typeof document === "undefined" ? "" : document.baseURI;
+		}
+		/** 兜底：按官方 `openConnectionWebSocket` 的算法拼 URL 并 `new WebSocket`。 */
+		function openFallbackSocket(path) {
+			const base = transportBase();
+			if (base === "") throw new Error("no transport base（既无 __DSH_TRANSPORT__.streamBaseUrl 也无 document.baseURI）");
+			const url = new URL(path.slice(1), base);
+			url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+			return new WebSocket(url.href);
+		}
 		// src/client/AirRemoteBar.tsx
 		/** Dock hint under the composer: explains the Air Remote link while the official mic is active. */
 		function AirRemoteBar({ voiceState }) {
@@ -403,7 +420,9 @@ window.__ModuleLoader__.load({
 		*
 		* 挂载只做一件事：GET `/airremote/firmware/manifest`。**不自动连接 WS**；
 		* 用户点「扫描设备」→ GET `/airremote/ports`（宿主只枚举串口），点「开始烧录」时才
-		* 懒连接 `/airremote/flash`。不轮询、不监听插拔；断线原因（code/reason）直接显示。
+		* 懒连接 `/airremote/flash`（走 DSH Connection service，桌面页靠
+		* `__DSH_TRANSPORT__.streamBaseUrl` 解析宿主地址）。不轮询、不监听插拔；
+		* 断线原因（code/carrier/base）直接显示。
 		*/
 		const MAX_LOG_LINES = 200;
 		const SUPPORTED_CHIP = "esp32c6";
@@ -476,7 +495,10 @@ window.__ModuleLoader__.load({
 		* 设置区块：只有「固件身份 + 开始/取消 + 进度 + 日志」。
 		* 串口选择、VID/PID、擦除整片这些都属于宿主侧决策，浏览器不再参与。
 		*/
-		function FirmwareFlash({ onBoardChange }) {
+		function FirmwareFlash({ onBoardChange, openSocket, socketCarrier, socketBase }) {
+			const carrier = socketCarrier ?? "fallback-base";
+			const baseInfo = socketBase ?? transportBase();
+			const makeSocket = (0, react.useCallback)(() => openSocket !== void 0 ? openSocket() : openFallbackSocket(FLASH_WS_PATH), [openSocket]);
 			const [manifest, setManifest] = (0, react.useState)(null);
 			const [manifestError, setManifestError] = (0, react.useState)(null);
 			/** 初始「未扫描」：不自动连接、不显示「已断开」。 */
@@ -494,6 +516,7 @@ window.__ModuleLoader__.load({
 			const [status, setStatus] = (0, react.useState)(null);
 			const [lines, setLines] = (0, react.useState)([]);
 			const socketRef = (0, react.useRef)(null);
+			const detachRef = (0, react.useRef)(null);
 			const startAfterConnect = (0, react.useRef)(false);
 			const logBoxRef = (0, react.useRef)(null);
 			const appendLine = (0, react.useCallback)((line) => {
@@ -597,36 +620,31 @@ window.__ModuleLoader__.load({
 			/**
 			* 建一次 `/airremote/flash` 连接。**只在用户点「开始烧录」时**调用（懒连接），
 			* 打开设置页不会碰它，所以页面不会一打开就提示「已断开」。
-			* 连接 URL 用 `document.baseURI`（与 DSH 自身 `openConnectionWebSocket` 一致），
-			* 避免 Electron / 子路径部署下 `location.host` 拼错。
+			*
+			* 主路径：DSH Connection service（`ctx.connection.openWebSocket`）——桌面页的
+			* 宿主地址在 `__DSH_TRANSPORT__.streamBaseUrl` 里，`document.baseURI` 是
+			* `dsh-app:` 自定义协议，裸 WebSocket 用它拼 URL 会 1006（已实测）。
+			* 兜底：`openFallbackSocket` 逐字对齐 DSH 官方 `openConnectionWebSocket`。
 			*/
 			const connect = (0, react.useCallback)((alsoStart = false) => {
 				const current = socketRef.current;
-				if (current !== null && (current.readyState === WebSocket.CONNECTING || current.readyState === WebSocket.OPEN)) {
-					if (alsoStart && current.readyState === WebSocket.OPEN) {
+				if (current !== null && (current.readyState === 0 || current.readyState === 1)) {
+					if (alsoStart && current.readyState === 1) {
 						current.send(JSON.stringify({ type: "start" }));
 						setStartSent(true);
 					} else if (alsoStart) startAfterConnect.current = true;
 					return;
 				}
 				startAfterConnect.current = alsoStart;
-				let url;
-				try {
-					const parsed = new URL(FLASH_WS_PATH.slice(1), document.baseURI);
-					parsed.protocol = parsed.protocol === "https:" ? "wss:" : "ws:";
-					url = parsed.href;
-				} catch {
-					url = `${location.protocol === "https:" ? "wss://" : "ws://"}${location.host}${FLASH_WS_PATH}`;
-				}
 				let socket;
 				try {
-					socket = new WebSocket(url);
+					socket = makeSocket();
 				} catch (error) {
 					startAfterConnect.current = false;
 					setConnection("closed");
 					setStatus({
 						kind: "error",
-						text: `连接烧录服务失败：${errorText(error)}`
+						text: `连接烧录服务失败（carrier=${carrier}, base=${baseInfo}）：${errorText(error)}`
 					});
 					return;
 				}
@@ -634,7 +652,7 @@ window.__ModuleLoader__.load({
 				setConnection("connecting");
 				setCloseInfo(null);
 				setStatus(null);
-				socket.onopen = () => {
+				const onOpen = () => {
 					if (socketRef.current !== socket) return;
 					setConnection("open");
 					if (startAfterConnect.current) {
@@ -643,28 +661,48 @@ window.__ModuleLoader__.load({
 						setStartSent(true);
 					}
 				};
-				socket.onmessage = (event) => {
+				const onMessage = (event) => {
 					if (socketRef.current !== socket) return;
-					handleServerMessage(event.data);
+					const data = event?.data;
+					handleServerMessage(data);
 				};
-				socket.onerror = () => void 0;
-				socket.onclose = (event) => {
+				const onError = () => void 0;
+				const onClose = (event) => {
 					if (socketRef.current !== socket) return;
 					socketRef.current = null;
+					detachRef.current = null;
 					startAfterConnect.current = false;
 					setConnection("closed");
+					const detail = event;
+					const code = typeof detail?.code === "number" ? detail.code : void 0;
+					const reason = typeof detail?.reason === "string" ? detail.reason : "";
 					setCloseInfo({
-						code: event.code,
-						reason: event.reason
+						code: code ?? -1,
+						reason
 					});
 					setStartSent(false);
 					setCancelSent(false);
 					setStatus({
 						kind: "error",
-						text: `烧录服务连接断开（code=${String(event.code)}${event.reason === "" ? "" : `，${event.reason}`}）`
+						text: `烧录服务连接断开（code=${code === void 0 ? "unknown" : String(code)}，carrier=${carrier}，base=${baseInfo}${reason === "" ? "" : `，${reason}`}）`
 					});
 				};
-			}, [handleServerMessage]);
+				socket.addEventListener("open", onOpen);
+				socket.addEventListener("message", onMessage);
+				socket.addEventListener("error", onError);
+				socket.addEventListener("close", onClose);
+				detachRef.current = () => {
+					socket.removeEventListener?.("open", onOpen);
+					socket.removeEventListener?.("message", onMessage);
+					socket.removeEventListener?.("error", onError);
+					socket.removeEventListener?.("close", onClose);
+				};
+			}, [
+				baseInfo,
+				carrier,
+				handleServerMessage,
+				makeSocket
+			]);
 			(0, react.useEffect)(() => {
 				let alive = true;
 				(async () => {
@@ -700,12 +738,9 @@ window.__ModuleLoader__.load({
 				return () => {
 					const socket = socketRef.current;
 					socketRef.current = null;
-					if (socket === null) return;
-					socket.onopen = null;
-					socket.onmessage = null;
-					socket.onerror = null;
-					socket.onclose = null;
-					socket.close();
+					detachRef.current?.();
+					detachRef.current = null;
+					socket?.close();
 				};
 			}, []);
 			(0, react.useEffect)(() => {
@@ -770,7 +805,7 @@ window.__ModuleLoader__.load({
 			/** 往宿主发一条指令；连接不在时给出可见提示而不是静默失败。 */
 			const send = (0, react.useCallback)((payload) => {
 				const socket = socketRef.current;
-				if (socket === null || socket.readyState !== WebSocket.OPEN) {
+				if (socket === null || socket.readyState !== 1) {
 					setStatus({
 						kind: "error",
 						text: "烧录服务尚未连接，点「开始烧录」会先建立连接。"
@@ -994,7 +1029,11 @@ window.__ModuleLoader__.load({
 						},
 						children: [
 							"烧录服务连接已断开：code=",
-							closeInfo.code,
+							closeInfo.code < 0 ? "unknown" : closeInfo.code,
+							" · carrier=",
+							carrier,
+							" · base=",
+							baseInfo,
 							closeInfo.reason === "" ? "" : `，${closeInfo.reason}`
 						]
 					}) : null,
@@ -1140,7 +1179,7 @@ window.__ModuleLoader__.load({
 		* below. Both blocks keep their own state and host routes; this component only
 		* puts them on one page so Settings shows one "Air remote" entry instead of two.
 		*/
-		function AirRemoteSettings() {
+		function AirRemoteSettings({ openSocket, socketCarrier, socketBase }) {
 			/** 「扫描设备」找到的端口：时间同步优先用它，避免再次自动探测。 */
 			const [board, setBoard] = (0, react.useState)(null);
 			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("section", {
@@ -1159,7 +1198,12 @@ window.__ModuleLoader__.load({
 							background: "rgba(128, 128, 128, 0.25)"
 						}
 					}),
-					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(FirmwareFlash, { onBoardChange: setBoard })
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(FirmwareFlash, {
+						onBoardChange: setBoard,
+						openSocket,
+						socketCarrier,
+						socketBase
+					})
 				]
 			});
 		}
@@ -1678,11 +1722,24 @@ window.__ModuleLoader__.load({
 			en: { nav: "Air remote (ESP32-C6)" },
 			zh: { nav: "Air Remote 语音遥控板" }
 		};
-		const inject = ["slots", "locale"];
+		const inject = [
+			"slots",
+			"locale",
+			"connection"
+		];
 		async function apply(ctx) {
 			const voiceState = createVoiceState();
 			const disposeMicrophone = installVirtualMicrophone({ status: voiceState });
 			ctx.effect(() => disposeMicrophone, "dsh-airremote virtual microphone");
+			/**
+			* 烧录通道：主路径走 DSH Connection service（桌面页靠
+			* `__DSH_TRANSPORT__.streamBaseUrl` 解析宿主地址 + 认证 socket 工厂）；
+			* 服务不可用时退回与 DSH 官方实现一致的 base 解析。
+			*/
+			const connection = ctx.connection;
+			const openFlashSocket = () => connection !== void 0 && typeof connection.openWebSocket === "function" ? connection.openWebSocket("/airremote/flash") : openFallbackSocket("/airremote/flash");
+			const socketCarrier = connection !== void 0 ? "connection-service" : "fallback-base";
+			const socketBase = connection !== void 0 ? "transport-managed" : transportBase();
 			const locale = ctx.locale;
 			ctx.effect(() => locale.register(LOCALE_NAMESPACE, DICTIONARIES), "dsh-airremote locale");
 			const t = locale.bind(LOCALE_NAMESPACE);
@@ -1698,7 +1755,11 @@ window.__ModuleLoader__.load({
 				order: 40,
 				label: () => t("nav"),
 				locale: LOCALE_NAMESPACE
-			}, AirRemoteSettings));
+			}, (() => AirRemoteSettings({
+				openSocket: openFlashSocket,
+				socketCarrier,
+				socketBase
+			}))));
 			ctx.slots.inject("settings.section.icon", () => ctx.slots.register({
 				name: "settings.section.icon",
 				id: "airremote"

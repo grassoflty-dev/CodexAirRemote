@@ -22,7 +22,11 @@ for (const needle of [
   'airremote',
   'settings.airremote',
   '/airremote/sync-time',
-  '/airremote/firmware/manifest'
+  '/airremote/firmware/manifest',
+  '/airremote/ports',
+  '/airremote/flash',
+  'openWebSocket',
+  '__DSH_TRANSPORT__'
 ]) {
   assert.ok(source.includes(needle), `client bundle mentions ${needle}`)
 }
@@ -48,7 +52,7 @@ assert.equal(typeof registration.factory, 'function')
 
 const exports = registration.factory((name) => require(name))
 assert.equal(typeof exports.apply, 'function')
-assert.deepEqual([...exports.inject].sort(), ['locale', 'slots'])
+assert.deepEqual([...exports.inject].sort(), ['connection', 'locale', 'slots'])
 
 /* Every contribution the plugin is allowed to make: `${slot}:${id}` -> slot. */
 const expectations = new Map([
@@ -62,7 +66,21 @@ const locales = new Map()
 
 let effectRegistered = false
 const disposers = []
+let openedSocketPath
+const fakeSocket = {
+  readyState: 0,
+  send() {},
+  close() {},
+  addEventListener() {},
+  removeEventListener() {}
+}
 const ctx = {
+  connection: {
+    openWebSocket(path) {
+      openedSocketPath = path
+      return fakeSocket
+    }
+  },
   effect(body) {
     effectRegistered = true
     const disposer = body()
@@ -103,6 +121,9 @@ const ctx = {
 await exports.apply(ctx)
 assert.equal(effectRegistered, true)
 assert.deepEqual(registered.sort(), [...expectations.keys()].sort())
+assert.equal(openedSocketPath, undefined, 'mount must not open the flash socket')
+assert.equal(typeof ctx.connection.openWebSocket, 'function')
+console.log('    connection-service flash opener wired (lazy, not opened on mount)')
 for (const dispose of disposers) dispose()
 console.log(
   'ok  built client bundle registers and applies (id=dsh-airremote, dock status + one Air remote settings section + icon)'

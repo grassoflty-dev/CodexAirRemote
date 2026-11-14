@@ -1,4 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import {
+  SOCKET_CONNECTING,
+  SOCKET_OPEN,
+  openFallbackSocket,
+  transportBase,
+  type FlashSocket
+} from './flash-socket.js'
 
 /**
  * 「固件烧录」设置区块：浏览器端只负责展示固件身份、发起 / 取消烧录、渲染进度与日志；
@@ -25,7 +32,9 @@ import { useCallback, useEffect, useRef, useState } from 'react'
  *
  * 挂载只做一件事：GET `/airremote/firmware/manifest`。**不自动连接 WS**；
  * 用户点「扫描设备」→ GET `/airremote/ports`（宿主只枚举串口），点「开始烧录」时才
- * 懒连接 `/airremote/flash`。不轮询、不监听插拔；断线原因（code/reason）直接显示。
+ * 懒连接 `/airremote/flash`（走 DSH Connection service，桌面页靠
+ * `__DSH_TRANSPORT__.streamBaseUrl` 解析宿主地址）。不轮询、不监听插拔；
+ * 断线原因（code/carrier/base）直接显示。
  */
 
 const MAX_LOG_LINES = 200
@@ -146,7 +155,25 @@ function readPhase(value: unknown): ServerPhase | null {
  * 设置区块：只有「固件身份 + 开始/取消 + 进度 + 日志」。
  * 串口选择、VID/PID、擦除整片这些都属于宿主侧决策，浏览器不再参与。
  */
-export function FirmwareFlash({ onBoardChange }: { onBoardChange?: (board: string | null) => void }) {
+export function FirmwareFlash({
+  onBoardChange,
+  openSocket,
+  socketCarrier,
+  socketBase
+}: {
+  onBoardChange?: (board: string | null) => void
+  /** 主路径由 DSH Connection service 提供；省略时用官方 base 解析兜底。 */
+  openSocket?: () => FlashSocket
+  /** 诊断用：当前 carrier 与 base（不包含任何 token）。 */
+  socketCarrier?: string
+  socketBase?: string
+}) {
+  const carrier = socketCarrier ?? 'fallback-base'
+  const baseInfo = socketBase ?? transportBase()
+  const makeSocket = useCallback(
+    (): FlashSocket => (openSocket !== undefined ? openSocket() : openFallbackSocket(FLASH_WS_PATH)),
+    [openSocket]
+  )
   const [manifest, setManifest] = useState<FirmwareManifest | null>(null)
   const [manifestError, setManifestError] = useState<string | null>(null)
   /** 初始「未扫描」：不自动连接、不显示「已断开」。 */
@@ -160,7 +187,8 @@ export function FirmwareFlash({ onBoardChange }: { onBoardChange?: (board: strin
   const [status, setStatus] = useState<Status | null>(null)
   const [lines, setLines] = useState<string[]>([])
 
-  const socketRef = useRef<WebSocket | null>(null)
+  const socketRef = useRef<FlashSocket | null>(null)
+  const detachRef = useRef<(() => void) | null>(null)
   const startAfterConnect = useRef(false)
   const logBoxRef = useRef<HTMLDivElement | null>(null)
 
@@ -264,71 +292,93 @@ export function FirmwareFlash({ onBoardChange }: { onBoardChange?: (board: strin
   /**
    * 建一次 `/airremote/flash` 连接。**只在用户点「开始烧录」时**调用（懒连接），
    * 打开设置页不会碰它，所以页面不会一打开就提示「已断开」。
-   * 连接 URL 用 `document.baseURI`（与 DSH 自身 `openConnectionWebSocket` 一致），
-   * 避免 Electron / 子路径部署下 `location.host` 拼错。
+   *
+   * 主路径：DSH Connection service（`ctx.connection.openWebSocket`）——桌面页的
+   * 宿主地址在 `__DSH_TRANSPORT__.streamBaseUrl` 里，`document.baseURI` 是
+   * `dsh-app:` 自定义协议，裸 WebSocket 用它拼 URL 会 1006（已实测）。
+   * 兜底：`openFallbackSocket` 逐字对齐 DSH 官方 `openConnectionWebSocket`。
    */
-  const connect = useCallback((alsoStart = false) => {
-    const current = socketRef.current
-    if (current !== null && (current.readyState === WebSocket.CONNECTING || current.readyState === WebSocket.OPEN)) {
-      if (alsoStart && current.readyState === WebSocket.OPEN) {
-        current.send(JSON.stringify({ type: 'start' }))
-        setStartSent(true)
-      } else if (alsoStart) {
-        startAfterConnect.current = true
+  const connect = useCallback(
+    (alsoStart = false) => {
+      const current = socketRef.current
+      if (current !== null && (current.readyState === SOCKET_CONNECTING || current.readyState === SOCKET_OPEN)) {
+        if (alsoStart && current.readyState === SOCKET_OPEN) {
+          current.send(JSON.stringify({ type: 'start' }))
+          setStartSent(true)
+        } else if (alsoStart) {
+          startAfterConnect.current = true
+        }
+        return
       }
-      return
-    }
 
-    startAfterConnect.current = alsoStart
-    let url: string
-    try {
-      const parsed = new URL(FLASH_WS_PATH.slice(1), document.baseURI)
-      parsed.protocol = parsed.protocol === 'https:' ? 'wss:' : 'ws:'
-      url = parsed.href
-    } catch {
-      url = `${location.protocol === 'https:' ? 'wss://' : 'ws://'}${location.host}${FLASH_WS_PATH}`
-    }
-    let socket: WebSocket
-    try {
-      socket = new WebSocket(url)
-    } catch (error) {
-      startAfterConnect.current = false
-      setConnection('closed')
-      setStatus({ kind: 'error', text: `连接烧录服务失败：${errorText(error)}` })
-      return
-    }
-
-    socketRef.current = socket
-    setConnection('connecting')
-    setCloseInfo(null)
-    setStatus(null)
-
-    socket.onopen = () => {
-      if (socketRef.current !== socket) return
-      setConnection('open')
-      if (startAfterConnect.current) {
+      startAfterConnect.current = alsoStart
+      let socket: FlashSocket
+      try {
+        socket = makeSocket()
+      } catch (error) {
         startAfterConnect.current = false
-        socket.send(JSON.stringify({ type: 'start' }))
-        setStartSent(true)
+        setConnection('closed')
+        setStatus({
+          kind: 'error',
+          text: `连接烧录服务失败（carrier=${carrier}, base=${baseInfo}）：${errorText(error)}`
+        })
+        return
       }
-    }
-    socket.onmessage = (event: MessageEvent) => {
-      if (socketRef.current !== socket) return
-      handleServerMessage(event.data)
-    }
-    // 出错后浏览器一定会再触发 onclose，断线状态统一在 onclose 里收口。
-    socket.onerror = () => undefined
-    socket.onclose = (event: CloseEvent) => {
-      if (socketRef.current !== socket) return
-      socketRef.current = null
-      startAfterConnect.current = false
-      setConnection('closed')
-      setCloseInfo({ code: event.code, reason: event.reason })
-      setStartSent(false)
-      setCancelSent(false)
-      setStatus({ kind: 'error', text: `烧录服务连接断开（code=${String(event.code)}${event.reason === '' ? '' : `，${event.reason}`}）` })
-    }
-  }, [handleServerMessage])
+
+      socketRef.current = socket
+      setConnection('connecting')
+      setCloseInfo(null)
+      setStatus(null)
+
+      const onOpen = (): void => {
+        if (socketRef.current !== socket) return
+        setConnection('open')
+        if (startAfterConnect.current) {
+          startAfterConnect.current = false
+          socket.send(JSON.stringify({ type: 'start' }))
+          setStartSent(true)
+        }
+      }
+      const onMessage = (event: unknown): void => {
+        if (socketRef.current !== socket) return
+        const data = (event as { data?: unknown } | undefined)?.data
+        handleServerMessage(data)
+      }
+      // 出错后 carrier 一定会再触发 close，断线状态统一在 close 里收口。
+      const onError = (): void => undefined
+      const onClose = (event: unknown): void => {
+        if (socketRef.current !== socket) return
+        socketRef.current = null
+        detachRef.current = null
+        startAfterConnect.current = false
+        setConnection('closed')
+        const detail = event as { code?: unknown; reason?: unknown } | undefined
+        const code = typeof detail?.code === 'number' ? detail.code : undefined
+        const reason = typeof detail?.reason === 'string' ? detail.reason : ''
+        setCloseInfo({ code: code ?? -1, reason })
+        setStartSent(false)
+        setCancelSent(false)
+        setStatus({
+          kind: 'error',
+          text:
+            `烧录服务连接断开（code=${code === undefined ? 'unknown' : String(code)}，carrier=${carrier}，base=${baseInfo}` +
+            `${reason === '' ? '' : `，${reason}`}）`
+        })
+      }
+
+      socket.addEventListener('open', onOpen)
+      socket.addEventListener('message', onMessage)
+      socket.addEventListener('error', onError)
+      socket.addEventListener('close', onClose)
+      detachRef.current = () => {
+        socket.removeEventListener?.('open', onOpen)
+        socket.removeEventListener?.('message', onMessage)
+        socket.removeEventListener?.('error', onError)
+        socket.removeEventListener?.('close', onClose)
+      }
+    },
+    [baseInfo, carrier, handleServerMessage, makeSocket]
+  )
 
   // 挂载：读 manifest（一次）。清理时不再回写状态。
   useEffect(() => {
@@ -369,12 +419,9 @@ export function FirmwareFlash({ onBoardChange }: { onBoardChange?: (board: strin
     return () => {
       const socket = socketRef.current
       socketRef.current = null
-      if (socket === null) return
-      socket.onopen = null
-      socket.onmessage = null
-      socket.onerror = null
-      socket.onclose = null
-      socket.close()
+      detachRef.current?.()
+      detachRef.current = null
+      socket?.close()
     }
   }, [])
 
@@ -422,7 +469,7 @@ export function FirmwareFlash({ onBoardChange }: { onBoardChange?: (board: strin
   /** 往宿主发一条指令；连接不在时给出可见提示而不是静默失败。 */
   const send = useCallback((payload: { type: string }): boolean => {
     const socket = socketRef.current
-    if (socket === null || socket.readyState !== WebSocket.OPEN) {
+    if (socket === null || socket.readyState !== SOCKET_OPEN) {
       setStatus({ kind: 'error', text: '烧录服务尚未连接，点「开始烧录」会先建立连接。' })
       return false
     }
@@ -582,7 +629,7 @@ export function FirmwareFlash({ onBoardChange }: { onBoardChange?: (board: strin
       {connection === 'connecting' ? <div style={mutedStyle}>正在连接烧录服务…</div> : null}
       {connection === 'closed' && closeInfo !== null ? (
         <div style={{ fontSize: '11px', opacity: 0.6, lineHeight: 1.55 }}>
-          烧录服务连接已断开：code={closeInfo.code}
+          烧录服务连接已断开：code={closeInfo.code < 0 ? 'unknown' : closeInfo.code} · carrier={carrier} · base={baseInfo}
           {closeInfo.reason === '' ? '' : `，${closeInfo.reason}`}
         </div>
       ) : null}

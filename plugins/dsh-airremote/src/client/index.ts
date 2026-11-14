@@ -1,4 +1,5 @@
 import type { Context } from '@deepseek-ai/cordis'
+import { openFallbackSocket, transportBase, type FlashSocket } from './flash-socket.js'
 import { AirRemoteBar } from './AirRemoteBar.js'
 import { AirRemoteSettings, AirRemoteSettingsIcon } from './AirRemoteSettings.js'
 import { createVoiceState } from './voice-state.js'
@@ -25,12 +26,30 @@ interface LocaleService {
   bind(namespace: string): (key: string) => string
 }
 
-export const inject = ['slots', 'locale']
+export const inject = ['slots', 'locale', 'connection']
+
+/** DSH Connection service 的最小面（`ctx.connection.openWebSocket`）。 */
+interface ConnectionService {
+  openWebSocket(path: string): FlashSocket
+}
 
 export async function apply(ctx: Context): Promise<void> {
   const voiceState = createVoiceState()
   const disposeMicrophone = installVirtualMicrophone({ status: voiceState })
   ctx.effect(() => disposeMicrophone, 'dsh-airremote virtual microphone')
+
+  /**
+   * 烧录通道：主路径走 DSH Connection service（桌面页靠
+   * `__DSH_TRANSPORT__.streamBaseUrl` 解析宿主地址 + 认证 socket 工厂）；
+   * 服务不可用时退回与 DSH 官方实现一致的 base 解析。
+   */
+  const connection = (ctx as unknown as { connection?: ConnectionService }).connection
+  const openFlashSocket = (): FlashSocket =>
+    connection !== undefined && typeof connection.openWebSocket === 'function'
+      ? connection.openWebSocket('/airremote/flash')
+      : openFallbackSocket('/airremote/flash')
+  const socketCarrier = connection !== undefined ? 'connection-service' : 'fallback-base'
+  const socketBase = connection !== undefined ? 'transport-managed' : transportBase()
 
   const locale = (ctx as unknown as { locale: LocaleService }).locale
   ctx.effect(() => locale.register(LOCALE_NAMESPACE, DICTIONARIES), 'dsh-airremote locale')
@@ -57,7 +76,7 @@ export async function apply(ctx: Context): Promise<void> {
         label: () => t('nav'),
         locale: LOCALE_NAMESPACE
       },
-      AirRemoteSettings as never
+      (() => AirRemoteSettings({ openSocket: openFlashSocket, socketCarrier, socketBase })) as never
     )
   )
 

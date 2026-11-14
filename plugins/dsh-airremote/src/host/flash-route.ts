@@ -123,6 +123,10 @@ export class FlashRoute {
 
     client.connection = connection
     this.clients.add(connection)
+    /* 诊断：记录实际握手来源，便于对照浏览器页面的 carrier/base 报错。 */
+    this.options.logger?.(
+      `airremote: flash socket accepted (origin=${req.headers.origin ?? 'none'}, host=${req.headers.host ?? 'none'})`
+    )
     this.ensureHeartbeat()
 
     // 新连接先拿当前状态：空闲就是 idle；有任务在跑则告诉它 running，后续事件继续广播。

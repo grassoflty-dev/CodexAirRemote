@@ -2879,6 +2879,7 @@ var FlashRoute = class {
 		});
 		client.connection = connection;
 		this.clients.add(connection);
+		this.options.logger?.(`airremote: flash socket accepted (origin=${req.headers.origin ?? "none"}, host=${req.headers.host ?? "none"})`);
 		this.ensureHeartbeat();
 		this.sendJson(connection, {
 			type: "state",
