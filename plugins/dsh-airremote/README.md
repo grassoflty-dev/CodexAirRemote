@@ -207,14 +207,19 @@ UTC+1 柏林 / UTC+8 北京 / UTC+9 东京）、一个「同步到开发板」�
   不是故障。**要烧录请用 Chrome/Edge 打开同一个地址。**
 - 环境缺 WebCrypto 时也会禁用烧录（sha256 校验做不了）。
 
-### 副作用：会清掉 NVS，即 Wi-Fi 配网与时区
+### 烧录保留 NVS（配对 / 配网 / 时区）
 
-合并镜像从 **0x0** 整体写入（bootloader / 分区表 / ota_data / app 全在里面），**会覆盖 nvs 分区**，
-也就是**清除开发板上的 Wi-Fi 配网与时区设置**——这是镜像布局决定的，不是可选项。烧完必须：
+0.7.2 / 插件 0.5.2 起**不再整片写 0x0**：`manifest.json` 带有 `regions` 表，插件按段写入
+`0x0 bootloader`、`0x8000 分区表`、`0x10d000 ota_data`、`0x200000 app`，**跳过
+`0x9000–0x107000` 的 NVS 分区**。因此烧固件**不会**清除：
 
-1. 重新配网（本插件暂不提供配网 UI，见「状态」表里的 M4）；
-2. 时间：自动对时开着（默认）时，烧完连上开发板的第一次会话就会自动补写时间和时区；关掉开关的话
-   回到「开发板时间」再点一次「同步到开发板」。
+1. **蓝牙配对**（两台电脑的 bond 都保留，换机不需要重新配对）；
+2. Wi-Fi 配网；
+3. 时区设置。
+
+验证方式（开发/验收用）：烧前、烧后各读一次 NVS 区，sha256 必须完全一致；烧完 Windows
+**不删除设备**也应能直接连上。若旧版插件/旧 manifest（没有 `regions`）仍按整片写，插件会告警并退回
+旧行为——此时若出现配对异常，请在 Windows「设置 → 蓝牙和其他设备」**删除该设备后重新配对一次**。
 
 ### 内置镜像怎么来的（开发侧，运行时绝不调用）
 
@@ -233,9 +238,11 @@ node scripts/bundle-firmware.mjs --version 0.7.2   # 打固件时显式给固件
 注意兜底来源是**插件版本**（`0.5.2`），与固件版本别混用（见「两套版本号」），发布固件请按上面显式给版本。
 
 脚本做的事：跑 `idf -C firmware merge-bin`（失败回落到 `python -m esptool merge_bin`），把
-`firmware/build/merged-binary.bin`（`4,686,640` 字节）拷成
+`firmware/build/merged-binary.bin`（0.7.2 为 `4,697,040` 字节）拷成
 `plugins/dsh-airremote/firmware/codex_air_remote-merged.bin`，再写 `manifest.json`
-（`size` / `sha256` / `builtAt` / `version` / `commit` / `chip` / `flashOffset`）。
+（`size` / `sha256` / `builtAt` / `version` / `commit` / `chip` / `flashOffset` / **`regions`**）。
+`regions` 由 `firmware/build/flash_args` 生成（`{name, offset, size}` 四段，按偏移升序），
+插件运行时按它分段写入并跳过 NVS。
 合并偏移以 `firmware/build/flash_args` 为准：`0x0` bootloader、`0x8000` partition-table、
 `0x10d000` ota_data_initial、`0x200000` app。
 
