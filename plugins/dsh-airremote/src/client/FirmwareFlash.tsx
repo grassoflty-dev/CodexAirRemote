@@ -31,8 +31,8 @@ const MAX_LOG_LINES = 200
 const SUPPORTED_CHIP = 'esp32c6'
 const FLASH_WS_PATH = '/airremote/flash'
 const NVS_WARNING =
-  '合并固件从 0x0 整体写入，会覆盖 nvs 分区：烧录会清除开发板上的 Wi-Fi 配网与时区设置，烧录后需重新配网并再次同步时间。'
-const NVS_CONFIRM = '烧录会清除开发板上的 Wi-Fi 配网与时区设置，烧录后需重新配网并再次同步时间。'
+  '烧录按段写入 bootloader / 分区表 / app / ota，不写 NVS 分区：开发板上的蓝牙配对、Wi-Fi 配网与时区都会保留。若烧录后仍出现配对异常，请在 Windows 删除该设备后重新配对。'
+const NVS_CONFIRM = '烧录会保留开发板上的蓝牙配对、Wi-Fi 配网与时区（不写 NVS 分区）。'
 /** 取消烧录的二次确认：中途中断会留下写了一半的固件，板子起不来。 */
 const CANCEL_CONFIRM = '中断烧录会清空 flash，开发板将无法启动，必须重新烧录才能恢复。确定中断？'
 /** 取消后的状态文案：强调板子当前不可启动，引导用户立刻重烧。 */
@@ -551,7 +551,7 @@ export function FirmwareFlash() {
             {status.kind === 'done'
               ? `烧录完成 · 固件 v${manifest === null ? '?' : manifest.version} · ${status.port} · ${formatSeconds(
                   status.seconds
-                )}；请重新配网并再次同步时间。`
+                )}；配对/配网/时区已保留。`
               : status.text}
           </span>
           {showRetry ? (

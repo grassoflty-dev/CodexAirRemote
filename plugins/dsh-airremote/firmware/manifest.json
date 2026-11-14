@@ -1,10 +1,32 @@
 {
   "plugin": "dsh-airremote",
   "chip": "esp32c6",
-  "version": "0.7.1",
-  "commit": "3bbbedb",
+  "version": "0.7.2",
+  "commit": "a72d9f0",
   "flashOffset": 0,
-  "size": 4686640,
-  "sha256": "a612403344d11871073dafd6e58eba959c324e8ab04c0256f6044ff9dcf3404d",
-  "builtAt": "2026-11-13T09:39:57.759Z"
+  "size": 4697040,
+  "sha256": "88bb70c41aa34687843ef21ab2b65188ca471527549bb0c2b04db3a71c103615",
+  "builtAt": "2026-11-14T03:14:12.755Z",
+  "regions": [
+    {
+      "offset": 0,
+      "size": 22176,
+      "name": "bootloader"
+    },
+    {
+      "offset": 32768,
+      "size": 3072,
+      "name": "partition-table"
+    },
+    {
+      "offset": 1101824,
+      "size": 8192,
+      "name": "ota_data_initial"
+    },
+    {
+      "offset": 2097152,
+      "size": 2599888,
+      "name": "codex_air_remote"
+    }
+  ]
 }

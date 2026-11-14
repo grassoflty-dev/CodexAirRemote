@@ -2123,6 +2123,7 @@ function normalizeManifest$1(value) {
 	if (typeof offset !== "number" || !Number.isInteger(offset) || offset < 0) throw new Error("manifest 的 flashOffset 必须是非负整数");
 	const sha256 = text("sha256").toLowerCase();
 	if (!/^[0-9a-f]{64}$/.test(sha256)) throw new Error("manifest 的 sha256 必须是 64 位小写 hex");
+	const regions = normalizeRegions(record.regions, size);
 	return {
 		plugin: text("plugin"),
 		chip: text("chip"),
@@ -2131,8 +2132,37 @@ function normalizeManifest$1(value) {
 		flashOffset: offset,
 		size,
 		sha256,
-		builtAt: text("builtAt")
+		builtAt: text("builtAt"),
+		...regions === void 0 ? {} : { regions }
 	};
+}
+/** 解析可选的 `regions`：按偏移升序、互不重叠、不越界、不碰 NVS。 */
+function normalizeRegions(value, imageSize) {
+	if (value === void 0) return void 0;
+	if (!Array.isArray(value) || value.length === 0) throw new Error("manifest 的 regions 必须是非空数组");
+	const regions = value.map((entry, index) => {
+		if (entry === null || typeof entry !== "object") throw new Error(`manifest.regions[${String(index)}] 不是对象`);
+		const record = entry;
+		const regionOffset = record.offset;
+		const regionSize = record.size;
+		const name = record.name;
+		if (typeof regionOffset !== "number" || !Number.isInteger(regionOffset) || regionOffset < 0) throw new Error(`manifest.regions[${String(index)}].offset 必须是非负整数`);
+		if (typeof regionSize !== "number" || !Number.isInteger(regionSize) || regionSize <= 0) throw new Error(`manifest.regions[${String(index)}].size 必须是正整数`);
+		if (typeof name !== "string" || name.trim() === "") throw new Error(`manifest.regions[${String(index)}].name 必须是非空字符串`);
+		if (regionOffset + regionSize > imageSize) throw new Error(`manifest.regions[${String(index)}] 超出镜像大小`);
+		if (regionOffset < 1077248 && regionOffset + regionSize > 36864) throw new Error(`manifest.regions[${String(index)}] 覆盖 NVS 分区（0x9000..0x107000）`);
+		return {
+			offset: regionOffset,
+			size: regionSize,
+			name: name.trim()
+		};
+	});
+	regions.sort((left, right) => left.offset - right.offset);
+	for (let i = 1; i < regions.length; i += 1) {
+		const previous = regions[i - 1];
+		if (previous.offset + previous.size > regions[i].offset) throw new Error(`manifest.regions[${String(i)}] 与前一段重叠`);
+	}
+	return regions;
 }
 /** `If-None-Match` 命中当前 sha256（允许 `W/` 前缀与逗号列表）。 */
 function matchesEtag(header, sha256) {
@@ -2583,10 +2613,7 @@ async function flashFirmware(options) {
 		await loader.main();
 		throwIfAborted(options.signal);
 		await loader.writeFlash({
-			fileArray: [{
-				data: image.data,
-				address: 0
-			}],
+			fileArray: firmwareFileArray(image.manifest, image.data),
 			flashSize: "keep",
 			flashMode: "keep",
 			flashFreq: "keep",
@@ -2665,6 +2692,29 @@ function normalizeManifest(value) {
 	if (typeof offset !== "number" || !Number.isInteger(offset) || offset < 0) throw new Error("manifest 的 flashOffset 必须是非负整数");
 	const sha256 = text("sha256").toLowerCase();
 	if (!/^[0-9a-f]{64}$/.test(sha256)) throw new Error("manifest 的 sha256 必须是 64 位小写 hex");
+	const rawRegions = record.regions;
+	let regions;
+	if (rawRegions !== void 0) {
+		if (!Array.isArray(rawRegions) || rawRegions.length === 0) throw new Error("manifest 的 regions 必须是非空数组");
+		regions = rawRegions.map((entry, index) => {
+			if (entry === null || typeof entry !== "object") throw new Error(`manifest.regions[${String(index)}] 不是对象`);
+			const region = entry;
+			const regionOffset = region.offset;
+			const regionSize = region.size;
+			const name = region.name;
+			if (typeof regionOffset !== "number" || !Number.isInteger(regionOffset) || regionOffset < 0) throw new Error(`manifest.regions[${String(index)}].offset 必须是非负整数`);
+			if (typeof regionSize !== "number" || !Number.isInteger(regionSize) || regionSize <= 0) throw new Error(`manifest.regions[${String(index)}].size 必须是正整数`);
+			if (typeof name !== "string" || name.trim() === "") throw new Error(`manifest.regions[${String(index)}].name 必须是非空字符串`);
+			if (regionOffset + regionSize > size) throw new Error(`manifest.regions[${String(index)}] 超出镜像大小`);
+			if (regionOffset < 1077248 && regionOffset + regionSize > 36864) throw new Error(`manifest.regions[${String(index)}] 覆盖 NVS 分区`);
+			return {
+				offset: regionOffset,
+				size: regionSize,
+				name: name.trim()
+			};
+		});
+		regions.sort((left, right) => left.offset - right.offset);
+	}
 	return {
 		plugin: text("plugin"),
 		chip: text("chip"),
@@ -2673,8 +2723,27 @@ function normalizeManifest(value) {
 		flashOffset: offset,
 		size,
 		sha256,
-		builtAt: text("builtAt")
+		builtAt: text("builtAt"),
+		...regions === void 0 ? {} : { regions }
 	};
+}
+/**
+* 由 manifest 的 `regions` 生成 esptool-js 的 `fileArray`：每段按自己的偏移写，
+* NVS（0x9000..0x107000）不在表里，所以配对/配网/时区不会被烧录擦掉。
+* manifest 没有 regions（旧镜像）时退回整片 0x0 写入，并在日志里明确警告。
+*/
+function firmwareFileArray(manifest, data) {
+	const regions = manifest.regions;
+	if (regions === void 0 || regions.length === 0) return [{
+		data,
+		address: manifest.flashOffset
+	}];
+	const fileArray = regions.map((region) => ({
+		data: data.slice(region.offset, region.offset + region.size),
+		address: region.offset
+	}));
+	for (const file of fileArray) if (file.address < 1077248 && file.address + file.data.length > 36864) throw new Error(`烧写区间覆盖 NVS 分区（${String(file.address)}），拒绝执行`);
+	return fileArray;
 }
 // src/host/flash-route.ts
 /** 心跳间隔：只发 `ping` 保活，不据此判定 / 断开空闲连接。 */

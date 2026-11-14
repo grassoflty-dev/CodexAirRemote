@@ -72,4 +72,13 @@ export declare function loadFirmwareImage(firmwareDir: string): Promise<LoadedIm
  * 关串口 → EN 硬复位。无论成功、失败、取消，串口都会被关掉并复位芯片。
  */
 export declare function flashFirmware(options: FlashFirmwareOptions): Promise<FlashResult>;
+/**
+ * 由 manifest 的 `regions` 生成 esptool-js 的 `fileArray`：每段按自己的偏移写，
+ * NVS（0x9000..0x107000）不在表里，所以配对/配网/时区不会被烧录擦掉。
+ * manifest 没有 regions（旧镜像）时退回整片 0x0 写入，并在日志里明确警告。
+ */
+export declare function firmwareFileArray(manifest: FirmwareManifest, data: Uint8Array): {
+    data: Uint8Array;
+    address: number;
+}[];
 export {};

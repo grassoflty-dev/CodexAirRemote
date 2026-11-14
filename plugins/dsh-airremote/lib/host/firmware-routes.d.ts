@@ -15,6 +15,18 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 export declare const FIRMWARE_IMAGE_FILE = "codex_air_remote-merged.bin";
 /** manifest 的文件名（相对 `firmwareDir`）。 */
 export declare const FIRMWARE_MANIFEST_FILE = "manifest.json";
+/** 合并镜像里可以直接按偏移烧写的一段（bootloader / 分区表 / ota_data / app）。 */
+export interface FirmwareFlashRegion {
+    /** 该段在合并镜像中的起始偏移，同时也是 flash 落地偏移。 */
+    offset: number;
+    /** 该段的字节数。 */
+    size: number;
+    /** 段名，仅用于日志与校验（如 `bootloader`、`app`）。 */
+    name: string;
+}
+/** NVS 分区范围（0x9000..0x107000）：烧录绝不能写这一段，否则会清掉配对/配网/时区。 */
+export declare const NVS_FLASH_START = 36864;
+export declare const NVS_FLASH_END = 1077248;
 /** 与契约一致的 manifest 形状。 */
 export interface FirmwareManifest {
     /** 产出这份固件的插件（固定 `dsh-airremote`）。 */
@@ -33,6 +45,11 @@ export interface FirmwareManifest {
     sha256: string;
     /** 构建时间（ISO 8601）。 */
     builtAt: string;
+    /**
+     * 分段烧写表（可选）。存在时插件按段烧写并跳过 NVS；缺省时退回整片 0x0 烧写
+     * （会擦 NVS，仅用于旧镜像兼容）。
+     */
+    regions?: FirmwareFlashRegion[];
 }
 export interface FirmwareRouteOptions {
     /** 插件包根下的 `firmware/` 目录（绝对路径）。 */

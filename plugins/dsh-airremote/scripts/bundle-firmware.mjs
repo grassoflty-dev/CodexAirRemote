@@ -221,6 +221,21 @@ function main() {
     info('取不到 git 短 hash，manifest.commit 留空')
   }
 
+  /* 分段烧写表：插件运行时按段写 bootloader / 分区表 / ota_data / app，
+   * 不写 NVS（0x9000..0x107000），所以烧固件不会清掉配对/配网/时区。 */
+  const regions = flashArgs.parts
+    .map((part) => ({
+      offset: Number.parseInt(part.offset, 16),
+      size: statSync(join(buildDir, part.file)).size,
+      name: part.file.split('/').pop().replace(/\.bin$/u, '')
+    }))
+    .sort((left, right) => left.offset - right.offset)
+  for (const region of regions) {
+    if (region.offset < 0x107000 && region.offset + region.size > 0x9000) {
+      fail(`段 ${region.name} 覆盖 NVS 分区（0x9000..0x107000），拒绝打包`)
+    }
+  }
+
   const manifest = {
     plugin: 'dsh-airremote',
     chip: DEFAULT_CHIP,
@@ -229,7 +244,8 @@ function main() {
     flashOffset: 0,
     size: copiedSize,
     sha256,
-    builtAt: new Date().toISOString()
+    builtAt: new Date().toISOString(),
+    regions
   }
   writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8')
 

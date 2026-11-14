@@ -6,7 +6,7 @@
 
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
-import { AudioRoute, BoardDiscovery, BoardSession, FakeBoard, acceptWebSocket, connectWebSocket } from './dist/host-test.js'
+import { AudioRoute, BoardDiscovery, BoardSession, FakeBoard, acceptWebSocket, connectWebSocket, firmwareFileArray, NVS_FLASH_END, NVS_FLASH_START } from './dist/host-test.js'
 
 const TOKEN = 'a'.repeat(64)
 const SIM_PORT = 48684
@@ -161,3 +161,55 @@ await testWebSocketRoundTrip()
 await testFakeBoardDiscoveryAndSession()
 await testAudioRoute()
 console.log('all host integration tests passed')
+
+
+// --- firmware flashing must keep the NVS partition --------------------------
+// Board NVS holds the BLE bonds (two computers), Wi-Fi provisioning and the
+// time zone. The plugin writes only the four firmware regions, so a flash must
+// never cover 0x9000..0x107000.
+{
+  const image = new Uint8Array(0x200000 + 0x1000)
+  const regions = [
+    { offset: 0x0, size: 0x6000, name: 'bootloader' },
+    { offset: 0x8000, size: 0x1000, name: 'partition-table' },
+    { offset: 0x10d000, size: 0x2000, name: 'ota_data_initial' },
+    { offset: 0x200000, size: 0x1000, name: 'codex_air_remote' }
+  ]
+  const manifest = {
+    plugin: 'dsh-airremote',
+    chip: 'esp32c6',
+    version: '0.7.2',
+    commit: 'test',
+    flashOffset: 0,
+    size: image.length,
+    sha256: 'a'.repeat(64),
+    builtAt: new Date().toISOString(),
+    regions
+  }
+  const files = firmwareFileArray(manifest, image)
+  assert.equal(files.length, 4)
+  files.forEach((file, index) => {
+    assert.equal(file.data.length, regions[index].size)
+    assert.ok(
+      file.address >= NVS_FLASH_END || file.address + file.data.length <= NVS_FLASH_START,
+      'region must not overlap the NVS partition'
+    )
+  })
+  // Old manifests without regions fall back to one whole-image write.
+  const legacy = firmwareFileArray({ ...manifest, regions: undefined }, image)
+  assert.equal(legacy.length, 1)
+  assert.equal(legacy[0].address, 0)
+  // A region that covers NVS is refused before touching the port.
+  assert.throws(
+    () =>
+      firmwareFileArray(
+        {
+          ...manifest,
+          regions: [...regions, { offset: 0x9000, size: 0x1000, name: 'nvs-snapshot' }]
+        },
+        image
+      ),
+    /NVS/u
+  )
+  console.log('ok  firmware regions keep the NVS partition')
+}

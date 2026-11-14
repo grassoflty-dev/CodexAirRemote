@@ -34,7 +34,7 @@ ESP32-C6 ──WSS 47683──▶ host（TLS 客户端 + UDP 47682 发现）
 
 ## 安装
 
-> 当前版本：插件 `0.5.1`，内置固件 `0.7.1`（含功能设置面板：顶部下滑 → 亮度滑条 + 屏幕逆时针 90° 旋转；两者均 RAM、不持久化；发布镜像已关闭待机调试钩子）。
+> 当前版本：插件 `0.5.2`，内置固件 `0.7.2`（含功能设置面板：顶部下滑 → 亮度滑条 + 屏幕逆时针 90° 旋转；两者均 RAM、不持久化；发布镜像已关闭待机调试钩子）。
 
 ### 方式一：从 DSH 插件索引安装（Discover，推荐）
 
@@ -166,7 +166,7 @@ UTC+1 柏林 / UTC+8 北京 / UTC+9 东京）、一个「同步到开发板」�
 设置页 → **固件烧录**（`settings.section`，id `airremote-firmware`）：把插件包里内置的合并镜像
 通过浏览器 **Web Serial** 写进开发板。host 不碰串口，只按静态文件把镜像流式下发。
 
-- 面板先读 `GET /airremote/firmware/manifest`，显示内置固件：版本 `v0.7.1`、构建时间 `builtAt`
+- 面板先读 `GET /airremote/firmware/manifest`，显示内置固件：版本 `v0.7.2`、构建时间 `builtAt`
   （`2026-11-13T09:39:57.759Z`）、大小 `size`（`4,686,640` 字节 ≈ 4.47 MB）、`sha256` 前 8 位
   （`a6124033`，悬停可见完整值）、芯片 `esp32c6`。
 - 「选择串口」调 `navigator.serial.requestPort({ filters: [{ usbVendorId: 0x303a }] })`，只列
@@ -189,10 +189,10 @@ UTC+1 柏林 / UTC+8 北京 / UTC+9 东京）、一个「同步到开发板」�
 
 ### 两套版本号：插件版本 ≠ 固件版本
 
-- **插件版本**：`plugins/dsh-airremote/package.json` 的 `version`（当前 `0.5.1`）。指插件**自身**
+- **插件版本**：`plugins/dsh-airremote/package.json` 的 `version`（当前 `0.5.2`）。指插件**自身**
   （host / client / 路由）的版本，按 npm 包语义演进，`npm install` 与插件管理安装看的是它。
-- **固件版本**：`plugins/dsh-airremote/firmware/manifest.json` 的 `version`（当前 `0.7.1`）。指**随包
-  内置的 ESP32-C6 固件**版本，显示在设置页「固件烧录 / 固件 v0.7.1」，烧录前的 sha256 校验和二次确认
+- **固件版本**：`plugins/dsh-airremote/firmware/manifest.json` 的 `version`（当前 `0.7.2`）。指**随包
+  内置的 ESP32-C6 固件**版本，显示在设置页「固件烧录 / 固件 v0.7.2」，烧录前的 sha256 校验和二次确认
   用的也是它。
 - 两者**故意解耦**：改插件代码不动固件版本，重打固件也不动插件版本，各自独立演进。所以打新固件时
   务必用 `--version` 显式给固件版本（见下文），别拿 `package.json` 的插件版本当固件版本。
@@ -224,13 +224,13 @@ UTC+1 柏林 / UTC+8 北京 / UTC+9 东京）、一个「同步到开发板」�
 ```powershell
 idf -C firmware build
 cd plugins/dsh-airremote
-node scripts/bundle-firmware.mjs --version 0.7.1   # 打固件时显式给固件版本
+node scripts/bundle-firmware.mjs --version 0.7.2   # 打固件时显式给固件版本
 ```
 
 版本号不再有脚本内置默认值，来源优先级：`--version <semver>` > 环境变量
 `AIRREMOTE_FIRMWARE_VERSION` > `plugins/dsh-airremote/package.json` 的 `version`（即插件版本）。
 三者都没有就报错退出；只想确认取到哪个版本、不生成镜像，可加 `--print-version`。
-注意兜底来源是**插件版本**（`0.5.1`），与固件版本别混用（见「两套版本号」），发布固件请按上面显式给版本。
+注意兜底来源是**插件版本**（`0.5.2`），与固件版本别混用（见「两套版本号」），发布固件请按上面显式给版本。
 
 脚本做的事：跑 `idf -C firmware merge-bin`（失败回落到 `python -m esptool merge_bin`），把
 `firmware/build/merged-binary.bin`（`4,686,640` 字节）拷成

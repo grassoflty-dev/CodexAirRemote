@@ -22,6 +22,20 @@ export const FIRMWARE_IMAGE_FILE = 'codex_air_remote-merged.bin'
 /** manifest 的文件名（相对 `firmwareDir`）。 */
 export const FIRMWARE_MANIFEST_FILE = 'manifest.json'
 
+/** 合并镜像里可以直接按偏移烧写的一段（bootloader / 分区表 / ota_data / app）。 */
+export interface FirmwareFlashRegion {
+  /** 该段在合并镜像中的起始偏移，同时也是 flash 落地偏移。 */
+  offset: number
+  /** 该段的字节数。 */
+  size: number
+  /** 段名，仅用于日志与校验（如 `bootloader`、`app`）。 */
+  name: string
+}
+
+/** NVS 分区范围（0x9000..0x107000）：烧录绝不能写这一段，否则会清掉配对/配网/时区。 */
+export const NVS_FLASH_START = 0x9000
+export const NVS_FLASH_END = 0x107000
+
 /** 与契约一致的 manifest 形状。 */
 export interface FirmwareManifest {
   /** 产出这份固件的插件（固定 `dsh-airremote`）。 */
@@ -40,6 +54,11 @@ export interface FirmwareManifest {
   sha256: string
   /** 构建时间（ISO 8601）。 */
   builtAt: string
+  /**
+   * 分段烧写表（可选）。存在时插件按段烧写并跳过 NVS；缺省时退回整片 0x0 烧写
+   * （会擦 NVS，仅用于旧镜像兼容）。
+   */
+  regions?: FirmwareFlashRegion[]
 }
 
 export interface FirmwareRouteOptions {
@@ -292,6 +311,7 @@ function normalizeManifest(value: unknown): FirmwareManifest {
   }
   const sha256 = text('sha256').toLowerCase()
   if (!/^[0-9a-f]{64}$/.test(sha256)) throw new Error('manifest 的 sha256 必须是 64 位小写 hex')
+  const regions = normalizeRegions(record.regions, size)
   return {
     plugin: text('plugin'),
     chip: text('chip'),
@@ -300,8 +320,46 @@ function normalizeManifest(value: unknown): FirmwareManifest {
     flashOffset: offset,
     size,
     sha256,
-    builtAt: text('builtAt')
+    builtAt: text('builtAt'),
+    ...(regions === undefined ? {} : { regions })
   }
+}
+
+/** 解析可选的 `regions`：按偏移升序、互不重叠、不越界、不碰 NVS。 */
+function normalizeRegions(value: unknown, imageSize: number): FirmwareFlashRegion[] | undefined {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value) || value.length === 0) throw new Error('manifest 的 regions 必须是非空数组')
+  const regions: FirmwareFlashRegion[] = value.map((entry, index) => {
+    if (entry === null || typeof entry !== 'object') throw new Error(`manifest.regions[${String(index)}] 不是对象`)
+    const record = entry as Record<string, unknown>
+    const regionOffset = record.offset
+    const regionSize = record.size
+    const name = record.name
+    if (typeof regionOffset !== 'number' || !Number.isInteger(regionOffset) || regionOffset < 0) {
+      throw new Error(`manifest.regions[${String(index)}].offset 必须是非负整数`)
+    }
+    if (typeof regionSize !== 'number' || !Number.isInteger(regionSize) || regionSize <= 0) {
+      throw new Error(`manifest.regions[${String(index)}].size 必须是正整数`)
+    }
+    if (typeof name !== 'string' || name.trim() === '') {
+      throw new Error(`manifest.regions[${String(index)}].name 必须是非空字符串`)
+    }
+    if (regionOffset + regionSize > imageSize) {
+      throw new Error(`manifest.regions[${String(index)}] 超出镜像大小`)
+    }
+    if (regionOffset < NVS_FLASH_END && regionOffset + regionSize > NVS_FLASH_START) {
+      throw new Error(`manifest.regions[${String(index)}] 覆盖 NVS 分区（0x9000..0x107000）`)
+    }
+    return { offset: regionOffset, size: regionSize, name: name.trim() }
+  })
+  regions.sort((left, right) => left.offset - right.offset)
+  for (let i = 1; i < regions.length; i += 1) {
+    const previous = regions[i - 1]
+    if (previous.offset + previous.size > regions[i].offset) {
+      throw new Error(`manifest.regions[${String(i)}] 与前一段重叠`)
+    }
+  }
+  return regions
 }
 
 /** `If-None-Match` 命中当前 sha256（允许 `W/` 前缀与逗号列表）。 */

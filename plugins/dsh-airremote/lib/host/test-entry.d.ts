@@ -13,6 +13,7 @@ export { TimeRoutes } from './time-routes.js';
 export { FirmwareRoutes } from './firmware-routes.js';
 export { SerialHolder, SerialRoutes } from './serial-holder.js';
 export { readChipInfo, pulseEnReset, NodeSerialPortDevice } from './serial-transport.js';
-export { flashFirmware, FlashError, loadFirmwareImage } from './flash-service.js';
+export { flashFirmware, FlashError, loadFirmwareImage, firmwareFileArray } from './flash-service.js';
+export { NVS_FLASH_START, NVS_FLASH_END } from './firmware-routes.js';
 export { FlashRoute } from './flash-route.js';
 export { DEFAULT_TIMEZONE, TIMEZONE_OPTIONS, minutesForTimezone, systemOffsetMinutes } from '../time-zones.js';

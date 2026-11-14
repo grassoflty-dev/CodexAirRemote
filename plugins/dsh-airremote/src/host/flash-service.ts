@@ -16,7 +16,14 @@
 import { createHash } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { FIRMWARE_IMAGE_FILE, FIRMWARE_MANIFEST_FILE, type FirmwareManifest } from './firmware-routes.js'
+import {
+  FIRMWARE_IMAGE_FILE,
+  FIRMWARE_MANIFEST_FILE,
+  NVS_FLASH_END,
+  NVS_FLASH_START,
+  type FirmwareFlashRegion,
+  type FirmwareManifest
+} from './firmware-routes.js'
 import {
   findSerialPortEntry,
   loadEsptool,
@@ -198,7 +205,7 @@ export async function flashFirmware(options: FlashFirmwareOptions): Promise<Flas
     throwIfAborted(options.signal)
 
     await loader.writeFlash({
-      fileArray: [{ data: image.data, address: 0 }],
+      fileArray: firmwareFileArray(image.manifest, image.data),
       flashSize: 'keep',
       flashMode: 'keep',
       flashFreq: 'keep',
@@ -310,6 +317,33 @@ function normalizeManifest(value: unknown): FirmwareManifest {
   }
   const sha256 = text('sha256').toLowerCase()
   if (!/^[0-9a-f]{64}$/.test(sha256)) throw new Error('manifest 的 sha256 必须是 64 位小写 hex')
+  const rawRegions = record.regions
+  let regions: FirmwareFlashRegion[] | undefined
+  if (rawRegions !== undefined) {
+    if (!Array.isArray(rawRegions) || rawRegions.length === 0) throw new Error('manifest 的 regions 必须是非空数组')
+    regions = rawRegions.map((entry, index) => {
+      if (entry === null || typeof entry !== 'object') throw new Error(`manifest.regions[${String(index)}] 不是对象`)
+      const region = entry as Record<string, unknown>
+      const regionOffset = region.offset
+      const regionSize = region.size
+      const name = region.name
+      if (typeof regionOffset !== 'number' || !Number.isInteger(regionOffset) || regionOffset < 0) {
+        throw new Error(`manifest.regions[${String(index)}].offset 必须是非负整数`)
+      }
+      if (typeof regionSize !== 'number' || !Number.isInteger(regionSize) || regionSize <= 0) {
+        throw new Error(`manifest.regions[${String(index)}].size 必须是正整数`)
+      }
+      if (typeof name !== 'string' || name.trim() === '') {
+        throw new Error(`manifest.regions[${String(index)}].name 必须是非空字符串`)
+      }
+      if (regionOffset + regionSize > size) throw new Error(`manifest.regions[${String(index)}] 超出镜像大小`)
+      if (regionOffset < NVS_FLASH_END && regionOffset + regionSize > NVS_FLASH_START) {
+        throw new Error(`manifest.regions[${String(index)}] 覆盖 NVS 分区`)
+      }
+      return { offset: regionOffset, size: regionSize, name: name.trim() }
+    })
+    regions.sort((left, right) => left.offset - right.offset)
+  }
   return {
     plugin: text('plugin'),
     chip: text('chip'),
@@ -318,6 +352,32 @@ function normalizeManifest(value: unknown): FirmwareManifest {
     flashOffset: offset,
     size,
     sha256,
-    builtAt: text('builtAt')
+    builtAt: text('builtAt'),
+    ...(regions === undefined ? {} : { regions })
   }
+}
+
+/**
+ * 由 manifest 的 `regions` 生成 esptool-js 的 `fileArray`：每段按自己的偏移写，
+ * NVS（0x9000..0x107000）不在表里，所以配对/配网/时区不会被烧录擦掉。
+ * manifest 没有 regions（旧镜像）时退回整片 0x0 写入，并在日志里明确警告。
+ */
+export function firmwareFileArray(
+  manifest: FirmwareManifest,
+  data: Uint8Array
+): { data: Uint8Array; address: number }[] {
+  const regions = manifest.regions
+  if (regions === undefined || regions.length === 0) {
+    return [{ data, address: manifest.flashOffset }]
+  }
+  const fileArray = regions.map((region) => ({
+    data: data.slice(region.offset, region.offset + region.size),
+    address: region.offset
+  }))
+  for (const file of fileArray) {
+    if (file.address < NVS_FLASH_END && file.address + file.data.length > NVS_FLASH_START) {
+      throw new Error(`烧写区间覆盖 NVS 分区（${String(file.address)}），拒绝执行`)
+    }
+  }
+  return fileArray
 }
