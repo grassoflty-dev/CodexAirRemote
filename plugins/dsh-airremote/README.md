@@ -32,38 +32,41 @@ ESP32-C6 ──WSS 47683──▶ host（TLS 客户端 + UDP 47682 发现）
 
 插件不注册自己的麦克风按钮；`conversation.input.dock` 只保留一条“Air Remote”状态提示。
 
-## 安装
+## 安装 / 更新 / 卸载
 
-> 当前版本：插件 `0.5.2`，内置固件 `0.7.2`（含功能设置面板：顶部下滑 → 亮度滑条 + 屏幕逆时针 90° 旋转；两者均 RAM、不持久化；发布镜像已关闭待机调试钩子）。
+> 当前版本：插件 `0.5.2`，内置固件 `0.7.2`。已验证的 DSH：**0.2.2-rc.3**（Electron 44.7.0 / Node 24.21.0）；
+> 最低要求 `engines.dsh = ">=0.2.0-rc.1"`。
 
-### 方式一：从 DSH 插件索引安装（Discover，推荐）
+### 方式一：本地 tarball（最稳，推荐给离线/单机环境）
 
-要求：DSH `>= 0.2.0-rc.1`，且已启用实验性插件市场 bundle
-`@deepseek-ai/dsh-experimental-plugin-market-bundle`（提供 **Plugins → Discover** 标签页）。
+1. 在仓库外生成安装包（或直接用已生成的包）：
+   ```powershell
+   cd plugins/dsh-airremote
+   npm pack --pack-destination E:\Develop\airremote-dist
+   # 产物：E:\Develop\airremote-dist\dsh-airremote-0.5.2.tgz
+   ```
+2. 交给 DSH 官方插件管理入口安装（`target` = tarball 的**绝对路径**）：
+   ```text
+   plugin_manager install_bundle  E:\Develop\airremote-dist\dsh-airremote-0.5.2.tgz
+   ```
+3. 到 **Plugins → Installed** 启用 `dsh-airremote`；客户端部分走 HMR 热更，宿主编排部分按界面提示重载页面/重启 DSH。
 
-1. 打开 **Plugins → Discover**，点 **Add index source**（添加索引源）；
-2. 填入本仓库的索引地址：
+### 方式二：从 DSH 插件索引安装（Discover）
 
+要求：已启用实验性插件市场 bundle
+`@deepseek-ai/dsh-experimental-plugin-market-bundle`（提供 **Plugins → Discover**）。
+
+1. **Plugins → Discover → Add index source**，填：
    ```text
    https://raw.githubusercontent.com/grassoflty-dev/CodexAirRemote/main/plugin-index.json
    ```
+2. 搜索 **Air remote**（或 `dsh-airremote`）→ **Install**；
+3. **Plugins → Installed** 启用 → 重载 DSH。
 
-3. 在 Discover 里搜索 **Air Remote**（或 `dsh-airremote`），点 **Install**；
-4. 安装完成后到 **Plugins → Installed** 启用 `dsh-airremote`，重启 DSH 或按提示重载。
+索引里的版本固定指向本仓库某个 commit（`git+https://…&path:/plugins/dsh-airremote`）；
+仓库已提交构建好的 `lib/`，安装时无需本地重新编译。
 
-索引里的每个版本都指向本仓库的一个固定 commit（`git+https://…&path:/plugins/dsh-airremote`），
-安装的是该 commit 的源码包；仓库已提交构建好的 `lib/`，所以安装时不需要在本地重新编译。
-
-### 方式二：直接安装（指定 commit）
-
-```text
-plugin_manager install_bundle  git+https://github.com/grassoflty-dev/CodexAirRemote.git#<40位commit>&path:/plugins/dsh-airremote
-```
-
-把它交给 DSH 的插件管理入口（或用安全启动器的 install-plugin 端点），**不要手工改 profile**。
-`plugin-index.json` 里的 `source.commit` 就是当前可用的 commit。
-
-### 本地开发安装（改代码时）
+### 方式三：本地目录（改代码时）
 
 ```powershell
 cd plugins/dsh-airremote
@@ -72,14 +75,29 @@ npm run check
 npm run build
 ```
 
-然后：
-
 ```text
-plugin_manager install_bundle  link:D:\C-Develop\CodexAirRemote\plugins\dsh-airremote
-plugin_manager set_bundle      @deepseek-ai/dsh-experimental-voice-input-bundle  enabled=true
+plugin_manager install_bundle  link:E:\Develop\CodexAirRemote\plugins\dsh-airremote
 ```
 
-在官方语音输入设置里把输入设备选为 **Air Remote (ESP32-C6)**。
+### 更新
+
+- 索引/本地目录：在 **Plugins** 里对该插件执行 Update，或重新 `install_bundle` 同一来源；
+- tarball：生成新版本 tarball（`npm pack`）后用同一 `install_bundle` 指向新 tgz；
+- 插件版本号与内置固件版本号是两套（见「两套版本号」一节）。
+
+### 卸载
+
+```text
+plugin_manager remove_bundle  dsh-airremote
+```
+卸载只移除插件本身，**不会**修改开发板固件，也不会清除开发板上的配对/配网/时区。
+
+### 安装后
+
+到 **Plugins → Installed** 启用 `dsh-airremote`，然后：
+- 设置页出现 **Air remote** 区块（固件烧录 / 开发板时间）；
+- 在官方语音输入设置里把输入设备选为 **Air remote (ESP32-C6)**；
+- 首次使用先在设置页烧录内置固件（烧录按段写入，保留 NVS）。
 
 ## 开发板时间（时区设置）
 

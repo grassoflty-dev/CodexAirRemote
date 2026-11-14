@@ -4,6 +4,20 @@
 
 > **当前开发进度、未完成项与已知问题见 [`docs/开发进度.md`](docs/开发进度.md)**（2026-11-11 暂停开发时的快照，含 commit 清单、真机验证状态与事故记录）。
 
+## 安装 / 更新 DSH 插件
+
+> 已验证的 DSH：**0.2.2-rc.3**（Electron 44.7.0 / Node 24.21.0）；插件 `engines.dsh = ">=0.2.0-rc.1"`。
+
+- **从索引安装**：DSH → **Plugins → Discover → Add index source**，填
+  `https://raw.githubusercontent.com/grassoflty-dev/CodexAirRemote/main/plugin-index.json`
+  → 搜索 **Air remote** → **Install** → **Plugins → Installed** 启用 → 重载 DSH。
+- **用本地 tarball 安装**（离线/单机最稳）：`npm pack` 生成 `dsh-airremote-<版本>.tgz`，交给 DSH 官方插件管理入口：
+  `plugin_manager install_bundle <tarball 绝对路径>`。
+- **更新**：Plugins 里对该插件 Update，或对同一来源重新 `install_bundle`；**卸载**：`plugin_manager remove_bundle dsh-airremote`。
+- 插件不修改 DSH profile 文件，不要手工 `pnpm add` 或编辑 `~/.dsh/profiles/**`。
+- 安装后设置页出现 **Air remote**（固件烧录 + 开发板时间/时区）；细节见
+  [插件 README](plugins/dsh-airremote/README.md) 与 [安装/发布指南](docs/plugin-install-and-publish.md)。
+
 Codex Air Remote 把一块带触摸屏的 ESP32 开发板变成 **DeepSeek Harness（DSH）** 的无线语音输入设备：板载麦克风音频经 TLS/WSS **直连 DSH 插件** `plugins/dsh-airremote`，由插件在本机用 whisper.cpp 转写并写入 DSH 草稿（**不经 VB-CABLE**）；切到陀螺仪模式后，开发板又变成一只蓝牙空中鼠标。仓库包含：
 
 - **DSH 插件 `dsh-airremote`**（`plugins/dsh-airremote/`，**项目主交付路径**）：麦克风按钮 + 页内快捷键 + 草稿注入（M1 代码级完成）；板子直连、本地 whisper 模型、烧录与配网（M2–M4 进行中）。设计与路线图见 [`docs/plugin-dsh-airremote.md`](docs/plugin-dsh-airremote.md)。
