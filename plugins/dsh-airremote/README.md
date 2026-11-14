@@ -34,7 +34,7 @@ ESP32-C6 ──WSS 47683──▶ host（TLS 客户端 + UDP 47682 发现）
 
 ## 安装 / 更新 / 卸载
 
-> 当前版本：插件 `0.5.2`，内置固件 `0.7.2`。已验证的 DSH：**0.2.2-rc.3**（Electron 44.7.0 / Node 24.21.0）；
+> 当前版本：插件 `0.5.3`，内置固件 `0.7.2`。已验证的 DSH：**0.2.2-rc.3**（Electron 44.7.0 / Node 24.21.0）；
 > 最低要求 `engines.dsh = ">=0.2.0-rc.1"`。
 
 ### 方式一：本地 tarball（最稳，推荐给离线/单机环境）
@@ -43,7 +43,7 @@ ESP32-C6 ──WSS 47683──▶ host（TLS 客户端 + UDP 47682 发现）
    ```powershell
    cd plugins/dsh-airremote
    npm pack --pack-destination E:\Develop\airremote-dist
-   # 产物：E:\Develop\airremote-dist\dsh-airremote-0.5.2.tgz
+   # 产物：E:\Develop\airremote-dist\dsh-airremote-0.5.3.tgz
    ```
 2. 交给 DSH 官方插件管理入口安装（`target` = tarball 的**绝对路径**）：
    ```text
@@ -95,7 +95,7 @@ plugin_manager remove_bundle  dsh-airremote
 ### 安装后
 
 到 **Plugins → Installed** 启用 `dsh-airremote`，然后：
-- 设置页出现 **Air remote** 区块（固件烧录 / 开发板时间）；
+- 设置页只有一个 **Air remote** 条目，页面内含「开发板时间」与「固件烧录」两块；
 - 在官方语音输入设置里把输入设备选为 **Air remote (ESP32-C6)**；
 - 首次使用先在设置页烧录内置固件（烧录按段写入，保留 NVS）。
 
@@ -181,7 +181,7 @@ UTC+1 柏林 / UTC+8 北京 / UTC+9 东京）、一个「同步到开发板」�
 
 ## 固件烧录
 
-设置页 → **固件烧录**（`settings.section`，id `airremote-firmware`）：把插件包里内置的合并镜像
+设置页 → **Air remote** → 下方「固件烧录」块（`settings.section` id `airremote`）：把插件包里内置的合并镜像
 通过浏览器 **Web Serial** 写进开发板。host 不碰串口，只按静态文件把镜像流式下发。
 
 - 面板先读 `GET /airremote/firmware/manifest`，显示内置固件：版本 `v0.7.2`、构建时间 `builtAt`

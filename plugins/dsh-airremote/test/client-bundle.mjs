@@ -3,9 +3,9 @@
  * evaluate the script, take the registered `{id, factory}`, and run the factory
  * with a CJS `require`. Verifies the wrapper, exports and a browserless `apply`.
  *
- * The plugin contributes three slots: the status line in the conversation dock
- * plus two settings sections (board time and firmware flashing). Anything else is
- * treated as an unexpected contribution and fails the test.
+ * The plugin contributes three slots: the status line in the conversation dock,
+ * one merged settings section ("Air remote": board time + firmware flashing) and
+ * its rail icon. Anything else is treated as an unexpected contribution.
  */
 
 import assert from 'node:assert/strict'
@@ -19,8 +19,8 @@ const source = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8'
 /* The bundle must still ship these contracts, not just the slot registrations. */
 for (const needle of [
   'settings.section',
-  'airremote-time',
-  'airremote-firmware',
+  'airremote',
+  'settings.airremote',
   '/airremote/sync-time',
   '/airremote/firmware/manifest'
 ]) {
@@ -48,25 +48,39 @@ assert.equal(typeof registration.factory, 'function')
 
 const exports = registration.factory((name) => require(name))
 assert.equal(typeof exports.apply, 'function')
-assert.equal(exports.inject.length, 1)
-assert.equal(exports.inject[0], 'slots')
+assert.deepEqual([...exports.inject].sort(), ['locale', 'slots'])
 
 /* Every contribution the plugin is allowed to make: `${slot}:${id}` -> slot. */
 const expectations = new Map([
   ['conversation.input.dock:dsh-airremote-status', 'conversation.input.dock'],
-  ['settings.section:airremote-time', 'settings.section'],
-  ['settings.section:airremote-firmware', 'settings.section']
+  ['settings.section:airremote', 'settings.section'],
+  ['settings.section.icon:airremote', 'settings.section.icon']
 ])
 const allowedSlots = new Set(expectations.values())
 const registered = []
+const locales = new Map()
 
 let effectRegistered = false
+const disposers = []
 const ctx = {
   effect(body) {
     effectRegistered = true
     const disposer = body()
     assert.equal(typeof disposer, 'function')
-    disposer()
+    disposers.push(disposer)
+  },
+  locale: {
+    register(namespace, dictionaries) {
+      locales.set(namespace, dictionaries)
+      return () => locales.delete(namespace)
+    },
+    bind(namespace) {
+      return (key) => {
+        const dictionaries = locales.get(namespace)
+        assert.ok(dictionaries, `unknown locale namespace ${namespace}`)
+        return dictionaries.en?.[key] ?? key
+      }
+    }
   },
   slots: {
     inject(name, callback) {
@@ -76,6 +90,11 @@ const ctx = {
     register(options) {
       const key = `${options.name}:${options.id}`
       assert.ok(expectations.has(key), `unexpected slot registration: ${key}`)
+      if (options.name === 'settings.section') {
+        assert.equal(typeof options.label, 'function', 'settings section label must be a locale function')
+        assert.equal(options.label(), 'Air remote (ESP32-C6)')
+        assert.equal(options.locale, 'settings.airremote')
+      }
       registered.push(key)
       return () => undefined
     }
@@ -84,6 +103,7 @@ const ctx = {
 await exports.apply(ctx)
 assert.equal(effectRegistered, true)
 assert.deepEqual(registered.sort(), [...expectations.keys()].sort())
+for (const dispose of disposers) dispose()
 console.log(
-  'ok  built client bundle registers and applies (id=dsh-airremote, dock status + board time + firmware flash)'
+  'ok  built client bundle registers and applies (id=dsh-airremote, dock status + one Air remote settings section + icon)'
 )

@@ -15,7 +15,7 @@
   `plugin_manager install_bundle <tarball 绝对路径>`。
 - **更新**：Plugins 里对该插件 Update，或对同一来源重新 `install_bundle`；**卸载**：`plugin_manager remove_bundle dsh-airremote`。
 - 插件不修改 DSH profile 文件，不要手工 `pnpm add` 或编辑 `~/.dsh/profiles/**`。
-- 安装后设置页出现 **Air remote**（固件烧录 + 开发板时间/时区）；细节见
+- 安装后设置页只有一个 **Air remote** 条目（内含开发板时间 + 固件烧录）；细节见
   [插件 README](plugins/dsh-airremote/README.md) 与 [安装/发布指南](docs/plugin-install-and-publish.md)。
 
 Codex Air Remote 把一块带触摸屏的 ESP32 开发板变成 **DeepSeek Harness（DSH）** 的无线语音输入设备：板载麦克风音频经 TLS/WSS **直连 DSH 插件** `plugins/dsh-airremote`，由插件在本机用 whisper.cpp 转写并写入 DSH 草稿（**不经 VB-CABLE**）；切到陀螺仪模式后，开发板又变成一只蓝牙空中鼠标。仓库包含：

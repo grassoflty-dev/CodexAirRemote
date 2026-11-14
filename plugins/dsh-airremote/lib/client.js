@@ -997,6 +997,108 @@ window.__ModuleLoader__.load({
 				]
 			});
 		}
+		// src/client/AirRemoteSettings.tsx
+		/**
+		* Single settings page for the plugin: board time on top, firmware flashing
+		* below. Both blocks keep their own state and host routes; this component only
+		* puts them on one page so Settings shows one "Air remote" entry instead of two.
+		*/
+		function AirRemoteSettings() {
+			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("section", {
+				style: {
+					display: "flex",
+					flexDirection: "column",
+					gap: "20px",
+					padding: "4px 2px"
+				},
+				children: [
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(DevBoardTime, {}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+						"aria-hidden": "true",
+						style: {
+							height: "1px",
+							background: "rgba(128, 128, 128, 0.25)"
+						}
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(FirmwareFlash, {})
+				]
+			});
+		}
+		/** Icon for the settings rail row; same motif as the bundle icon. */
+		function AirRemoteSettingsIcon() {
+			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("svg", {
+				viewBox: "0 0 36 36",
+				width: "20",
+				height: "20",
+				"aria-hidden": "true",
+				children: [
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("rect", {
+						x: "5.5",
+						y: "4.5",
+						width: "25",
+						height: "17.5",
+						rx: "3",
+						fill: "#101a2b",
+						stroke: "#3f7ae0",
+						strokeWidth: "2"
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("rect", {
+						x: "11.2",
+						y: "10.8",
+						width: "2.4",
+						height: "5.2",
+						rx: "1.2",
+						fill: "#4f8cff"
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("rect", {
+						x: "15.6",
+						y: "8.4",
+						width: "2.4",
+						height: "10",
+						rx: "1.2",
+						fill: "#7fb0ff"
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("rect", {
+						x: "20",
+						y: "9.8",
+						width: "2.4",
+						height: "7.2",
+						rx: "1.2",
+						fill: "#4f8cff"
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("rect", {
+						x: "24.4",
+						y: "11.6",
+						width: "2.4",
+						height: "3.6",
+						rx: "1.2",
+						fill: "#7fb0ff"
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("rect", {
+						x: "13.5",
+						y: "25.5",
+						width: "9",
+						height: "7",
+						rx: "2.4",
+						fill: "#2b3a52"
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("circle", {
+						cx: "18",
+						cy: "28.4",
+						r: "1.2",
+						fill: "#9fb6d6"
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("rect", {
+						x: "15.6",
+						y: "30.2",
+						width: "4.8",
+						height: "1.1",
+						rx: "0.55",
+						fill: "#6f88a8"
+					})
+				]
+			});
+		}
 		// src/client/voice-state.ts
 		function createVoiceState() {
 			let snapshot = {
@@ -1425,14 +1527,26 @@ window.__ModuleLoader__.load({
 		// src/client/index.ts
 		/**
 		* Client entry: install the virtual microphone that the official DSH
-		* voice-input plugin consumes. There is deliberately no microphone button here
-		* — the official plugin owns the trigger, recording UI and recognition.
+		* voice-input plugin consumes. There is deliberately no microphone button here —
+		* the official plugin owns the trigger, recording UI and recognition.
+		*
+		* Settings contributes exactly one section ("Air remote") holding the board
+		* clock and the firmware flasher, plus its rail icon.
 		*/
-		const inject = ["slots"];
+		/** Locale namespace for the settings rail entry; DSH resolves `label` with it. */
+		const LOCALE_NAMESPACE = "settings.airremote";
+		const DICTIONARIES = {
+			en: { nav: "Air remote (ESP32-C6)" },
+			zh: { nav: "Air Remote 语音遥控板" }
+		};
+		const inject = ["slots", "locale"];
 		async function apply(ctx) {
 			const voiceState = createVoiceState();
 			const disposeMicrophone = installVirtualMicrophone({ status: voiceState });
 			ctx.effect(() => disposeMicrophone, "dsh-airremote virtual microphone");
+			const locale = ctx.locale;
+			ctx.effect(() => locale.register(LOCALE_NAMESPACE, DICTIONARIES), "dsh-airremote locale");
+			const t = locale.bind(LOCALE_NAMESPACE);
 			ctx.slots.inject("conversation.input.dock", () => ctx.slots.register({
 				name: "conversation.input.dock",
 				id: "dsh-airremote-status",
@@ -1441,16 +1555,15 @@ window.__ModuleLoader__.load({
 			}, AirRemoteBar));
 			ctx.slots.inject("settings.section", () => ctx.slots.register({
 				name: "settings.section",
-				id: "airremote-time",
+				id: "airremote",
 				order: 40,
-				label: "开发板时间"
-			}, DevBoardTime));
-			ctx.slots.inject("settings.section", () => ctx.slots.register({
-				name: "settings.section",
-				id: "airremote-firmware",
-				order: 41,
-				label: "固件烧录"
-			}, FirmwareFlash));
+				label: () => t("nav"),
+				locale: LOCALE_NAMESPACE
+			}, AirRemoteSettings));
+			ctx.slots.inject("settings.section.icon", () => ctx.slots.register({
+				name: "settings.section.icon",
+				id: "airremote"
+			}, AirRemoteSettingsIcon));
 		}
 		exports.apply = apply;
 		exports.inject = inject;
