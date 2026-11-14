@@ -34,7 +34,7 @@ ESP32-C6 ──WSS 47683──▶ host（TLS 客户端 + UDP 47682 发现）
 
 ## 安装 / 更新 / 卸载
 
-> 当前版本：插件 `0.5.3`，内置固件 `0.7.2`。已验证的 DSH：**0.2.2-rc.3**（Electron 44.7.0 / Node 24.21.0）；
+> 当前版本：插件 `0.5.5`，内置固件 `0.7.2`。已验证的 DSH：**0.2.2-rc.3**（Electron 44.7.0 / Node 24.21.0）；
 > 最低要求 `engines.dsh = ">=0.2.0-rc.1"`。
 
 ### 方式一：本地 tarball（最稳，推荐给离线/单机环境）
@@ -43,11 +43,11 @@ ESP32-C6 ──WSS 47683──▶ host（TLS 客户端 + UDP 47682 发现）
    ```powershell
    cd plugins/dsh-airremote
    npm pack --pack-destination E:\Develop\airremote-dist
-   # 产物：E:\Develop\airremote-dist\dsh-airremote-0.5.3.tgz
+   # 产物：E:\Develop\airremote-dist\dsh-airremote-0.5.5.tgz
    ```
 2. 交给 DSH 官方插件管理入口安装（`target` = tarball 的**绝对路径**）：
    ```text
-   plugin_manager install_bundle  E:\Develop\airremote-dist\dsh-airremote-0.5.2.tgz
+   plugin_manager install_bundle  E:\Develop\airremote-dist\dsh-airremote-0.5.5.tgz
    ```
 3. 到 **Plugins → Installed** 启用 `dsh-airremote`；**host 侧代码安装后 HMR 即生效**（实测新路由不重启也能用），
    客户端 UI 需要**刷新页面（Ctrl+R）**加载新模块；刷新仍无效再完全重启 DSH。
@@ -209,7 +209,7 @@ UTC+1 柏林 / UTC+8 北京 / UTC+9 东京）、一个「同步到开发板」�
 
 ### 两套版本号：插件版本 ≠ 固件版本
 
-- **插件版本**：`plugins/dsh-airremote/package.json` 的 `version`（当前 `0.5.2`）。指插件**自身**
+- **插件版本**：`plugins/dsh-airremote/package.json` 的 `version`（当前 `0.5.5`）。指插件**自身**
   （host / client / 路由）的版本，按 npm 包语义演进，`npm install` 与插件管理安装看的是它。
 - **固件版本**：`plugins/dsh-airremote/firmware/manifest.json` 的 `version`（当前 `0.7.2`）。指**随包
   内置的 ESP32-C6 固件**版本，显示在设置页「固件烧录 / 固件 v0.7.2」，烧录前的 sha256 校验和二次确认
@@ -255,7 +255,7 @@ node scripts/bundle-firmware.mjs --version 0.7.2   # 打固件时显式给固件
 版本号不再有脚本内置默认值，来源优先级：`--version <semver>` > 环境变量
 `AIRREMOTE_FIRMWARE_VERSION` > `plugins/dsh-airremote/package.json` 的 `version`（即插件版本）。
 三者都没有就报错退出；只想确认取到哪个版本、不生成镜像，可加 `--print-version`。
-注意兜底来源是**插件版本**（`0.5.2`），与固件版本别混用（见「两套版本号」），发布固件请按上面显式给版本。
+注意兜底来源是**插件版本**（`0.5.5`），与固件版本别混用（见「两套版本号」），发布固件请按上面显式给版本。
 
 脚本做的事：跑 `idf -C firmware merge-bin`（失败回落到 `python -m esptool merge_bin`），把
 `firmware/build/merged-binary.bin`（0.7.2 为 `4,697,040` 字节）拷成

@@ -56,6 +56,19 @@
       },
       "versions": [
         {
+          "version": "0.5.5",
+          "publishTimestamp": 1794634677,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/grassoflty-dev/CodexAirRemote",
+            "commit": "d9a0d420bdbcfd0d1132c6eb38695323fedba1ac",
+            "path": "plugins/dsh-airremote"
+          },
+          "engines": {
+            "dsh": ">=0.2.0-rc.1"
+          }
+        },
+        {
           "version": "0.5.2",
           "publishTimestamp": 1794626110,
           "source": {
@@ -69,12 +82,12 @@
           }
         },
         {
-          "version": "0.5.0",
-          "publishTimestamp": 1794560120,
+          "version": "0.5.1",
+          "publishTimestamp": 1794563285,
           "source": {
             "type": "git",
             "url": "https://github.com/grassoflty-dev/CodexAirRemote",
-            "commit": "82d907ba7601487aef5536cba5ec50da51fa3813",
+            "commit": "2fe93a4a0b3fd0d06f4852b6ec56d91c9c10f993",
             "path": "plugins/dsh-airremote"
           },
           "engines": {
@@ -82,12 +95,12 @@
           }
         },
         {
-          "version": "0.5.1",
-          "publishTimestamp": 1794563285,
+          "version": "0.5.0",
+          "publishTimestamp": 1794560120,
           "source": {
             "type": "git",
             "url": "https://github.com/grassoflty-dev/CodexAirRemote",
-            "commit": "2fe93a4a0b3fd0d06f4852b6ec56d91c9c10f993",
+            "commit": "82d907ba7601487aef5536cba5ec50da51fa3813",
             "path": "plugins/dsh-airremote"
           },
           "engines": {
