@@ -35,6 +35,7 @@
 import type { IncomingMessage } from 'node:http'
 import type { Duplex } from 'node:stream'
 import { flashFirmware, FlashError } from './flash-service.js'
+import { isSameOriginRequest } from './origin.js'
 import { findBoardPort } from './serial-port.js'
 import type { SerialHolder } from './serial-holder.js'
 import { acceptWebSocket, type WsConnection } from './ws.js'
@@ -86,7 +87,7 @@ export class FlashRoute {
       socket.destroy()
       return
     }
-    if (!this.originAllowed(req)) {
+    if (!isSameOriginRequest(req, this.options.warn)) {
       socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n')
       socket.destroy()
       return
@@ -126,22 +127,6 @@ export class FlashRoute {
 
     // 新连接先拿当前状态：空闲就是 idle；有任务在跑则告诉它 running，后续事件继续广播。
     this.sendJson(connection, { type: 'state', phase: this.task === undefined ? 'idle' : 'running' })
-  }
-
-  /**
-   * 与 `audio-route.ts` 完全相同的同源策略：页面请求会带 Origin，必须和 Host 一致；
-   * `dsh-app:` / `file:` 是桌面壳，Node 客户端（测试）不带 Origin，都放行。
-   */
-  private originAllowed(req: IncomingMessage): boolean {
-    const origin = req.headers.origin
-    if (typeof origin !== 'string' || origin === '') return true
-    try {
-      const parsed = new URL(origin)
-      if (parsed.protocol === 'dsh-app:' || parsed.protocol === 'file:') return true
-      return parsed.host === req.headers.host
-    } catch {
-      return false
-    }
   }
 
   /** 只在有连接时开一个 interval；只发 ping，不因空闲关闭。 */

@@ -6,7 +6,7 @@
 
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
-import { AudioRoute, BoardDiscovery, BoardSession, FakeBoard, acceptWebSocket, connectWebSocket, firmwareFileArray, NVS_FLASH_END, NVS_FLASH_START } from './dist/host-test.js'
+import { AudioRoute, BoardDiscovery, BoardSession, FakeBoard, acceptWebSocket, connectWebSocket, firmwareFileArray, NVS_FLASH_END, NVS_FLASH_START, PortsRoute, listBoardPorts, isSameOriginRequest } from './dist/host-test.js'
 
 const TOKEN = 'a'.repeat(64)
 const SIM_PORT = 48684
@@ -212,4 +212,92 @@ console.log('all host integration tests passed')
     /NVS/u
   )
   console.log('ok  firmware regions keep the NVS partition')
+}
+
+
+// --- /airremote/ports: enumerate only, never open the serial port ------------
+{
+  function mockRes() {
+    return {
+      status: 0,
+      headers: {},
+      body: '',
+      headersSent: false,
+      writableEnded: false,
+      writeHead(status, headers) {
+        this.status = status
+        this.headers = headers
+        this.headersSent = true
+      },
+      end(chunk) {
+        this.body = chunk ?? ''
+        this.writableEnded = true
+      }
+    }
+  }
+  function mockReq(method, headers) {
+    return { method: method ?? 'GET', headers: headers ?? {} }
+  }
+
+  // 303A found → board is that port, other ports still listed
+  const hit = new PortsRoute({
+    list: async () => ({
+      ok: true,
+      ports: [
+        { path: 'COM3', vendorId: '303A', productId: '1001' },
+        { path: 'COM9', vendorId: '0483', productId: '5740' }
+      ],
+      board: 'COM3'
+    })
+  })
+  const hitRes = mockRes()
+  await hit.handler(mockReq('GET', {}), hitRes)
+  const hitBody = JSON.parse(hitRes.body)
+  assert.equal(hitRes.status, 200)
+  assert.equal(hitRes.headers['cache-control'], 'no-store')
+  assert.equal(hitBody.ok, true)
+  assert.equal(hitBody.board, 'COM3')
+  assert.equal(hitBody.ports.length, 2)
+
+  // no board → ok:true, board:null, still returns the port list
+  const none = new PortsRoute({ list: async () => ({ ok: true, ports: [{ path: 'COM9' }], board: null }) })
+  const noneRes = mockRes()
+  await none.handler(mockReq('GET', {}), noneRes)
+  const noneBody = JSON.parse(noneRes.body)
+  assert.equal(noneBody.ok, true)
+  assert.equal(noneBody.board, null)
+  assert.equal(noneBody.ports.length, 1)
+
+  // cross-site Origin → 403
+  const foreign = new PortsRoute({ list: async () => ({ ok: true, ports: [], board: null }) })
+  const foreignRes = mockRes()
+  await foreign.handler(mockReq('GET', { origin: 'http://evil.example', host: '127.0.0.1:9787' }), foreignRes)
+  assert.equal(foreignRes.status, 403)
+
+  // same-origin localhost vs 127.0.0.1 (same port) → allowed
+  const sameRes = mockRes()
+  await foreign.handler(mockReq('GET', { origin: 'http://localhost:9787', host: '127.0.0.1:9787' }), sameRes)
+  assert.equal(sameRes.status, 200)
+
+  // injected lister is used and an enumeration failure becomes ok:false
+  const broken = new PortsRoute({
+    list: async () => ({ ok: false, code: 'serial-error', message: 'boom', ports: [], board: null })
+  })
+  const brokenRes = mockRes()
+  await broken.handler(mockReq('GET', {}), brokenRes)
+  const brokenBody = JSON.parse(brokenRes.body)
+  assert.equal(brokenBody.ok, false)
+  assert.equal(brokenBody.code, 'serial-error')
+
+  // method not GET → 405
+  const postRes = mockRes()
+  await hit.handler(mockReq('POST', {}), postRes)
+  assert.equal(postRes.status, 405)
+
+  // helper: loopback with a different port must stay rejected
+  assert.equal(
+    isSameOriginRequest({ headers: { origin: 'http://localhost:9999', host: '127.0.0.1:9787' } }),
+    false
+  )
+  console.log('ok  /airremote/ports scan (board hit, none, origin 403, injected lister, 405)')
 }

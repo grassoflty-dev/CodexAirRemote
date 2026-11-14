@@ -133,7 +133,7 @@ window.__ModuleLoader__.load({
 		* the explicit button press, or automatically on host startup / board session
 		* when 「自动对时」 is on (the default); this panel never polls.
 		*/
-		function DevBoardTime() {
+		function DevBoardTime({ port }) {
 			const selectId = (0, react.useId)();
 			const autoSyncId = (0, react.useId)();
 			const [timezone, setTimezone] = (0, react.useState)(DEFAULT_TIMEZONE);
@@ -246,7 +246,10 @@ window.__ModuleLoader__.load({
 						const { status: httpStatus, data } = await requestJson("/airremote/sync-time", {
 							method: "POST",
 							headers: { "Content-Type": "application/json" },
-							body: JSON.stringify({ minutes })
+							body: JSON.stringify(port === null || port === void 0 || port === "" ? { minutes } : {
+								minutes,
+								port
+							})
 						});
 						if (httpStatus === 200 && data.ok === true) {
 							const port = typeof data.port === "string" && data.port !== "" ? data.port : "串口";
@@ -398,12 +401,14 @@ window.__ModuleLoader__.load({
 		* 已有烧录在跑时再发 start 会收到 `{type:'error', code:'busy'}`，但**连接不再断开**，
 		* 所以它按普通错误显示、并保持可重试；`ping` 等未知 / 心跳消息一律静默忽略。
 		*
-		* 挂载只做两件事：GET `/airremote/firmware/manifest`、建立**一次** WS。不自动烧录、
-		* 不轮询、不监听插拔；断线后只有用户点「重新连接」才会重连。
+		* 挂载只做一件事：GET `/airremote/firmware/manifest`。**不自动连接 WS**；
+		* 用户点「扫描设备」→ GET `/airremote/ports`（宿主只枚举串口），点「开始烧录」时才
+		* 懒连接 `/airremote/flash`。不轮询、不监听插拔；断线原因（code/reason）直接显示。
 		*/
 		const MAX_LOG_LINES = 200;
 		const SUPPORTED_CHIP = "esp32c6";
 		const FLASH_WS_PATH = "/airremote/flash";
+		const PORTS_PATH = "/airremote/ports";
 		const NVS_WARNING = "烧录按段写入 bootloader / 分区表 / app / ota，不写 NVS 分区：开发板上的蓝牙配对、Wi-Fi 配网与时区都会保留。若烧录后仍出现配对异常，请在 Windows 删除该设备后重新配对。";
 		const NVS_CONFIRM = "烧录会保留开发板上的蓝牙配对、Wi-Fi 配网与时区（不写 NVS 分区）。";
 		/** 取消烧录的二次确认：中途中断会留下写了一半的固件，板子起不来。 */
@@ -471,10 +476,17 @@ window.__ModuleLoader__.load({
 		* 设置区块：只有「固件身份 + 开始/取消 + 进度 + 日志」。
 		* 串口选择、VID/PID、擦除整片这些都属于宿主侧决策，浏览器不再参与。
 		*/
-		function FirmwareFlash() {
+		function FirmwareFlash({ onBoardChange }) {
 			const [manifest, setManifest] = (0, react.useState)(null);
 			const [manifestError, setManifestError] = (0, react.useState)(null);
-			const [connection, setConnection] = (0, react.useState)("connecting");
+			/** 初始「未扫描」：不自动连接、不显示「已断开」。 */
+			const [connection, setConnection] = (0, react.useState)("idle");
+			const [closeInfo, setCloseInfo] = (0, react.useState)(null);
+			const [scan, setScan] = (0, react.useState)({
+				status: "idle",
+				ports: [],
+				board: null
+			});
 			const [phase, setPhase] = (0, react.useState)("idle");
 			const [startSent, setStartSent] = (0, react.useState)(false);
 			const [cancelSent, setCancelSent] = (0, react.useState)(false);
@@ -482,6 +494,7 @@ window.__ModuleLoader__.load({
 			const [status, setStatus] = (0, react.useState)(null);
 			const [lines, setLines] = (0, react.useState)([]);
 			const socketRef = (0, react.useRef)(null);
+			const startAfterConnect = (0, react.useRef)(false);
 			const logBoxRef = (0, react.useRef)(null);
 			const appendLine = (0, react.useCallback)((line) => {
 				setLines((previous) => {
@@ -582,17 +595,34 @@ window.__ModuleLoader__.load({
 				}
 			}, [appendLine]);
 			/**
-			* 建一次连接。只有两种调用者：挂载时（一次）+ 用户点「重新连接」。
-			* 没有重连定时器，onclose 之后不会再自己连回去。
+			* 建一次 `/airremote/flash` 连接。**只在用户点「开始烧录」时**调用（懒连接），
+			* 打开设置页不会碰它，所以页面不会一打开就提示「已断开」。
+			* 连接 URL 用 `document.baseURI`（与 DSH 自身 `openConnectionWebSocket` 一致），
+			* 避免 Electron / 子路径部署下 `location.host` 拼错。
 			*/
-			const connect = (0, react.useCallback)(() => {
+			const connect = (0, react.useCallback)((alsoStart = false) => {
 				const current = socketRef.current;
-				if (current !== null && (current.readyState === WebSocket.CONNECTING || current.readyState === WebSocket.OPEN)) return;
-				const url = `${location.protocol === "https:" ? "wss://" : "ws://"}${location.host}${FLASH_WS_PATH}`;
+				if (current !== null && (current.readyState === WebSocket.CONNECTING || current.readyState === WebSocket.OPEN)) {
+					if (alsoStart && current.readyState === WebSocket.OPEN) {
+						current.send(JSON.stringify({ type: "start" }));
+						setStartSent(true);
+					} else if (alsoStart) startAfterConnect.current = true;
+					return;
+				}
+				startAfterConnect.current = alsoStart;
+				let url;
+				try {
+					const parsed = new URL(FLASH_WS_PATH.slice(1), document.baseURI);
+					parsed.protocol = parsed.protocol === "https:" ? "wss:" : "ws:";
+					url = parsed.href;
+				} catch {
+					url = `${location.protocol === "https:" ? "wss://" : "ws://"}${location.host}${FLASH_WS_PATH}`;
+				}
 				let socket;
 				try {
 					socket = new WebSocket(url);
 				} catch (error) {
+					startAfterConnect.current = false;
 					setConnection("closed");
 					setStatus({
 						kind: "error",
@@ -602,22 +632,37 @@ window.__ModuleLoader__.load({
 				}
 				socketRef.current = socket;
 				setConnection("connecting");
+				setCloseInfo(null);
 				setStatus(null);
 				socket.onopen = () => {
 					if (socketRef.current !== socket) return;
 					setConnection("open");
+					if (startAfterConnect.current) {
+						startAfterConnect.current = false;
+						socket.send(JSON.stringify({ type: "start" }));
+						setStartSent(true);
+					}
 				};
 				socket.onmessage = (event) => {
 					if (socketRef.current !== socket) return;
 					handleServerMessage(event.data);
 				};
 				socket.onerror = () => void 0;
-				socket.onclose = () => {
+				socket.onclose = (event) => {
 					if (socketRef.current !== socket) return;
 					socketRef.current = null;
+					startAfterConnect.current = false;
 					setConnection("closed");
+					setCloseInfo({
+						code: event.code,
+						reason: event.reason
+					});
 					setStartSent(false);
 					setCancelSent(false);
+					setStatus({
+						kind: "error",
+						text: `烧录服务连接断开（code=${String(event.code)}${event.reason === "" ? "" : `，${event.reason}`}）`
+					});
 				};
 			}, [handleServerMessage]);
 			(0, react.useEffect)(() => {
@@ -652,7 +697,6 @@ window.__ModuleLoader__.load({
 				};
 			}, []);
 			(0, react.useEffect)(() => {
-				connect();
 				return () => {
 					const socket = socketRef.current;
 					socketRef.current = null;
@@ -663,18 +707,73 @@ window.__ModuleLoader__.load({
 					socket.onclose = null;
 					socket.close();
 				};
-			}, [connect]);
+			}, []);
 			(0, react.useEffect)(() => {
 				const box = logBoxRef.current;
 				if (box !== null) box.scrollTop = box.scrollHeight;
 			}, [lines]);
+			/** 「扫描设备」：请宿主枚举串口（只 list、不打开），结果驱动烧录可用性并传给时间区。 */
+			const scanPorts = (0, react.useCallback)(async () => {
+				setScan({
+					status: "scanning",
+					ports: [],
+					board: null
+				});
+				setStatus(null);
+				try {
+					const response = await fetch(PORTS_PATH, {
+						headers: { Accept: "application/json" },
+						cache: "no-store"
+					});
+					const body = await response.json().catch(() => null);
+					const record = typeof body === "object" && body !== null ? body : {};
+					const rawPorts = Array.isArray(record.ports) ? record.ports : [];
+					const ports = [];
+					for (const entry of rawPorts) {
+						if (typeof entry !== "object" || entry === null) continue;
+						const port = entry;
+						if (typeof port.path !== "string" || port.path === "") continue;
+						ports.push({
+							path: port.path,
+							...typeof port.vendorId === "string" ? { vendorId: port.vendorId } : {},
+							...typeof port.productId === "string" ? { productId: port.productId } : {}
+						});
+					}
+					if (!response.ok || record.ok === false) {
+						const message = typeof record.message === "string" && record.message !== "" ? record.message : `HTTP ${response.status}`;
+						setScan({
+							status: "error",
+							ports,
+							board: null,
+							message
+						});
+						onBoardChange?.(null);
+						return;
+					}
+					const board = typeof record.board === "string" && record.board !== "" ? record.board : null;
+					setScan({
+						status: "done",
+						ports,
+						board
+					});
+					onBoardChange?.(board);
+				} catch (error) {
+					setScan({
+						status: "error",
+						ports: [],
+						board: null,
+						message: errorText(error)
+					});
+					onBoardChange?.(null);
+				}
+			}, [onBoardChange]);
 			/** 往宿主发一条指令；连接不在时给出可见提示而不是静默失败。 */
 			const send = (0, react.useCallback)((payload) => {
 				const socket = socketRef.current;
 				if (socket === null || socket.readyState !== WebSocket.OPEN) {
 					setStatus({
 						kind: "error",
-						text: "烧录服务未连接，请先点「重新连接」。"
+						text: "烧录服务尚未连接，点「开始烧录」会先建立连接。"
 					});
 					return false;
 				}
@@ -683,7 +782,10 @@ window.__ModuleLoader__.load({
 			}, []);
 			const manifestChipOk = manifest !== null && manifest.chip.toLowerCase() === SUPPORTED_CHIP;
 			const inFlight = phase === "running" || startSent;
-			const canStart = connection === "open" && manifest !== null && manifestChipOk && !inFlight;
+			const scannedBoard = scan.board;
+			const scanning = scan.status === "scanning";
+			const canScan = !inFlight && !scanning;
+			const canStart = manifest !== null && manifestChipOk && !inFlight && !scanning && scannedBoard !== null && connection !== "connecting";
 			const canCancel = connection === "open" && phase === "running" && !cancelSent;
 			const handleStart = (0, react.useCallback)(() => {
 				const current = manifest;
@@ -712,13 +814,24 @@ window.__ModuleLoader__.load({
 				setProgress(null);
 				setLines([]);
 				setCancelSent(false);
+				if (connection === "open") {
+					setStatus({
+						kind: "info",
+						text: "已发送烧录指令，等待宿主接管串口…"
+					});
+					if (!send({ type: "start" })) return;
+					setStartSent(true);
+					return;
+				}
 				setStatus({
 					kind: "info",
-					text: "已发送烧录指令，等待宿主接管串口…"
+					text: "正在连接烧录服务…"
 				});
-				if (!send({ type: "start" })) return;
 				setStartSent(true);
+				connect(true);
 			}, [
+				connect,
+				connection,
 				inFlight,
 				manifest,
 				manifestChipOk,
@@ -833,34 +946,57 @@ window.__ModuleLoader__.load({
 						},
 						children: NVS_WARNING
 					}),
-					connection === "closed" ? /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-						role: "status",
+					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 						style: {
 							display: "flex",
 							gap: "8px",
 							alignItems: "center",
 							flexWrap: "wrap",
-							fontSize: "12px",
-							lineHeight: 1.55,
-							padding: "6px 8px",
-							borderRadius: "6px",
-							background: "rgba(229, 83, 75, 0.1)",
-							color: "#e5534b"
+							fontSize: "12px"
 						},
-						children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: "已断开，点「重新连接」" }), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
+						children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
 							type: "button",
-							onClick: connect,
+							disabled: !canScan,
+							onClick: () => void scanPorts(),
 							style: {
 								...controlStyle,
-								padding: "2px 8px",
-								cursor: "pointer",
-								color: "inherit"
+								cursor: canScan ? "pointer" : "default",
+								opacity: canScan ? 1 : .6
 							},
-							children: "重新连接"
+							children: scanning ? "扫描中…" : "扫描设备"
+						}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+							style: { lineHeight: 1.55 },
+							"data-testid": "airremote-scan-status",
+							children: scan.status === "idle" ? "未扫描设备｜点「扫描设备」检查开发板是否已连接" : scan.status === "scanning" ? "正在扫描串口（只枚举，不打开）…" : scan.status === "error" ? `扫描失败：${scan.message}` : scan.board !== null ? `已找到开发板：${scan.board}` : "未找到开发板，请检查 USB 连接后重试"
 						})]
-					}) : connection === "connecting" ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+					}),
+					scan.status === "done" && scan.ports.length > 0 ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+						style: {
+							fontSize: "11px",
+							opacity: .7,
+							lineHeight: 1.55
+						},
+						children: scan.ports.map((port) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", { children: [
+							port.path,
+							port.vendorId === void 0 ? "" : ` · VID ${port.vendorId}`,
+							port.productId === void 0 ? "" : ` · PID ${port.productId}`
+						] }, port.path))
+					}) : null,
+					connection === "connecting" ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
 						style: mutedStyle,
 						children: "正在连接烧录服务…"
+					}) : null,
+					connection === "closed" && closeInfo !== null ? /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+						style: {
+							fontSize: "11px",
+							opacity: .6,
+							lineHeight: 1.55
+						},
+						children: [
+							"烧录服务连接已断开：code=",
+							closeInfo.code,
+							closeInfo.reason === "" ? "" : `，${closeInfo.reason}`
+						]
 					}) : null,
 					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 						style: {
@@ -873,6 +1009,7 @@ window.__ModuleLoader__.load({
 							/* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
 								type: "button",
 								disabled: !canStart,
+								title: scannedBoard === null ? "先点「扫描设备」找到开发板" : void 0,
 								onClick: handleStart,
 								style: {
 									...controlStyle,
@@ -1004,6 +1141,8 @@ window.__ModuleLoader__.load({
 		* puts them on one page so Settings shows one "Air remote" entry instead of two.
 		*/
 		function AirRemoteSettings() {
+			/** 「扫描设备」找到的端口：时间同步优先用它，避免再次自动探测。 */
+			const [board, setBoard] = (0, react.useState)(null);
 			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("section", {
 				style: {
 					display: "flex",
@@ -1012,7 +1151,7 @@ window.__ModuleLoader__.load({
 					padding: "4px 2px"
 				},
 				children: [
-					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(DevBoardTime, {}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(DevBoardTime, { port: board }),
 					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
 						"aria-hidden": "true",
 						style: {
@@ -1020,7 +1159,7 @@ window.__ModuleLoader__.load({
 							background: "rgba(128, 128, 128, 0.25)"
 						}
 					}),
-					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(FirmwareFlash, {})
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(FirmwareFlash, { onBoardChange: setBoard })
 				]
 			});
 		}

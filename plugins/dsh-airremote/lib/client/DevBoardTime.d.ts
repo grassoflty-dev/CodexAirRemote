@@ -6,4 +6,6 @@ export declare function syncFailureText(error: string | undefined, message: stri
  * the explicit button press, or automatically on host startup / board session
  * when 「自动对时」 is on (the default); this panel never polls.
  */
-export declare function DevBoardTime(): import("react").JSX.Element;
+export declare function DevBoardTime({ port }: {
+    port?: string | null;
+}): import("react").JSX.Element;

@@ -11,6 +11,56 @@ import { createSocket } from "node:dgram";
 import { createServer } from "node:http";
 import { homedir } from "node:os";
 import { readFile, stat } from "node:fs/promises";
+// src/host/origin.ts
+const LOOPBACK_HOSTNAMES = /* @__PURE__ */ new Set([
+	"localhost",
+	"127.0.0.1",
+	"[::1]",
+	"::1"
+]);
+/** `127.x.x.x`、`localhost`、`[::1]` 视为本机。 */
+function isLoopbackHostname(hostname) {
+	const name = hostname.trim().toLowerCase();
+	if (LOOPBACK_HOSTNAMES.has(name)) return true;
+	const parts = name.split(".");
+	return parts.length === 4 && parts[0] === "127" && parts.every((part) => /^\d{1,3}$/.test(part) && Number(part) <= 255);
+}
+/** 从 `Host` / `Origin` 的 host 里拆出主机名与端口（缺端口按 http 默认 80）。 */
+function splitHost(host) {
+	const value = host.trim();
+	if (value === "") return void 0;
+	try {
+		const parsed = new URL(`http://${value}`);
+		return {
+			hostname: parsed.hostname,
+			port: parsed.port === "" ? "80" : parsed.port
+		};
+	} catch {
+		return;
+	}
+}
+/**
+* @param warn 拒绝时记一行（带 origin / host），便于排查浏览器的 403。
+*/
+function isSameOriginRequest(req, warn) {
+	const origin = req.headers.origin;
+	const host = req.headers.host;
+	if (typeof origin !== "string" || origin === "") return true;
+	let parsed;
+	try {
+		parsed = new URL(origin);
+	} catch {
+		warn?.(`airremote: rejected request with malformed Origin ${origin}`);
+		return false;
+	}
+	if (parsed.protocol === "dsh-app:" || parsed.protocol === "file:") return true;
+	if (typeof host === "string" && parsed.host === host) return true;
+	const target = typeof host === "string" ? splitHost(host) : void 0;
+	const originPort = parsed.port === "" ? parsed.protocol === "https:" ? "443" : "80" : parsed.port;
+	if (target !== void 0 && isLoopbackHostname(parsed.hostname) && isLoopbackHostname(target.hostname) && originPort === target.port) return true;
+	warn?.(`airremote: rejected foreign Origin ${origin} (Host ${host ?? "?"})`);
+	return false;
+}
 function parseAudioFrame(payload) {
 	if (payload.length <= 4) return void 0;
 	if ((payload.length - 4) % 2 !== 0) return void 0;
@@ -766,15 +816,7 @@ var AudioRoute = class {
 	* Origin and are allowed.
 	*/
 	originAllowed(req) {
-		const origin = req.headers.origin;
-		if (typeof origin !== "string" || origin === "") return true;
-		try {
-			const parsed = new URL(origin);
-			if (parsed.protocol === "dsh-app:" || parsed.protocol === "file:") return true;
-			return parsed.host === req.headers.host;
-		} catch {
-			return false;
-		}
+		return isSameOriginRequest(req, this.options.logger);
 	}
 	start(active, _message) {
 		if (active.session !== void 0) return;
@@ -970,6 +1012,54 @@ async function findBoardPort(preferred = "") {
 	if (fromRegistry.length > 0) return fromRegistry[0];
 	const fromDevices = await comPortsFrom(POWERSHELL_PNP_SCRIPT);
 	return fromDevices.length > 0 ? fromDevices[0] : null;
+}
+/**
+* 枚举串口并找出 ESP32-C6（VID 303A）——**只 list，不打开端口**，不占串口锁。
+* `list`/`fallback` 仅用于测试注入；生产走 `SerialPort.list()` + 注册表/PnP 兜底。
+*/
+async function listBoardPorts(options = {}) {
+	const ports = [];
+	const push = (path, vendorId, productId) => {
+		const value = (path ?? "").trim();
+		if (value === "") return;
+		if (ports.some((port) => port.path.toUpperCase() === value.toUpperCase())) return;
+		ports.push({
+			path: value,
+			...vendorId === void 0 || vendorId === "" ? {} : { vendorId: vendorId.toUpperCase() },
+			...productId === void 0 || productId === "" ? {} : { productId: productId.toUpperCase() }
+		});
+	};
+	try {
+		if (options.list !== void 0) for (const port of await options.list()) push(port.path, port.vendorId, port.productId);
+		else {
+			const module = await loadSerialport$1();
+			if (module !== void 0) for (const port of await module.SerialPort.list()) push(port.path, port.vendorId, port.productId);
+		}
+	} catch (error) {
+		if (options.list !== void 0) return {
+			ok: false,
+			code: "serial-error",
+			message: toString(error),
+			ports,
+			board: null
+		};
+	}
+	if (ports.length === 0) {
+		const fallback = options.fallback ?? (async () => {
+			const fromRegistry = await comPortsFrom(POWERSHELL_REGISTRY_SCRIPT);
+			if (fromRegistry.length > 0) return fromRegistry;
+			return comPortsFrom(POWERSHELL_PNP_SCRIPT);
+		});
+		for (const path of await fallback()) push(path, ESPRESSIF_VENDOR_ID);
+	}
+	return {
+		ok: true,
+		ports,
+		board: ports.find((port) => (port.vendorId ?? "").toUpperCase() === "303A")?.path ?? null
+	};
+}
+function toString(error) {
+	return error instanceof Error ? error.message : String(error);
 }
 /** 读 `HKLM\SYSTEM\CurrentControlSet\Enum\USB` 下 `VID_303A*` 设备的 `Device Parameters\PortName`。 */
 const POWERSHELL_REGISTRY_SCRIPT = String.raw`
@@ -2073,15 +2163,7 @@ var FirmwareRoutes = class {
 	}
 	/** 与 `time-routes.ts` 相同的同源策略。 */
 	originAllowed(req) {
-		const origin = req.headers.origin;
-		if (typeof origin !== "string" || origin === "") return true;
-		try {
-			const parsed = new URL(origin);
-			if (parsed.protocol === "dsh-app:" || parsed.protocol === "file:") return true;
-			return parsed.host === req.headers.host;
-		} catch {
-			return false;
-		}
+		return isSameOriginRequest(req, this.options.warn);
 	}
 	rejectForeignOrigin(res) {
 		this.sendJson(res, 403, {
@@ -2765,7 +2847,7 @@ var FlashRoute = class {
 			socket.destroy();
 			return;
 		}
-		if (!this.originAllowed(req)) {
+		if (!isSameOriginRequest(req, this.options.warn)) {
 			socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
 			socket.destroy();
 			return;
@@ -2803,21 +2885,6 @@ var FlashRoute = class {
 			phase: this.task === void 0 ? "idle" : "running"
 		});
 	};
-	/**
-	* 与 `audio-route.ts` 完全相同的同源策略：页面请求会带 Origin，必须和 Host 一致；
-	* `dsh-app:` / `file:` 是桌面壳，Node 客户端（测试）不带 Origin，都放行。
-	*/
-	originAllowed(req) {
-		const origin = req.headers.origin;
-		if (typeof origin !== "string" || origin === "") return true;
-		try {
-			const parsed = new URL(origin);
-			if (parsed.protocol === "dsh-app:" || parsed.protocol === "file:") return true;
-			return parsed.host === req.headers.host;
-		} catch {
-			return false;
-		}
-	}
 	/** 只在有连接时开一个 interval；只发 ping，不因空闲关闭。 */
 	ensureHeartbeat() {
 		if (this.heartbeat !== void 0) return;
@@ -2973,6 +3040,47 @@ var FlashRoute = class {
 		for (const connection of connections) try {
 			connection.close(1001, "plugin disposed");
 		} catch {}
+	}
+};
+// src/host/ports-route.ts
+var PortsRoute = class {
+	options;
+	constructor(options = {}) {
+		this.options = options;
+	}
+	handler = async (req, res) => {
+		if (!isSameOriginRequest(req, this.options.warn)) {
+			this.send(res, 403, {
+				ok: false,
+				code: "forbidden",
+				message: "跨站请求被拒绝（Origin 与 Host 不一致）",
+				ports: []
+			});
+			return;
+		}
+		if ((req.method ?? "GET").toUpperCase() !== "GET") {
+			this.send(res, 405, {
+				ok: false,
+				code: "bad-request",
+				message: "只支持 GET",
+				ports: []
+			});
+			return;
+		}
+		const scan = await (this.options.list ?? listBoardPorts)();
+		if (scan.ok) this.options.log?.(`airremote: ports scan → ${String(scan.ports.length)} port(s), board=${scan.board ?? "none"}（仅枚举，未打开串口）`);
+		else this.options.warn?.(`airremote: ports scan failed（${scan.code ?? "internal"}）：${scan.message ?? ""}`);
+		this.send(res, 200, scan);
+	};
+	send(res, status, body) {
+		if (res.headersSent || res.writableEnded) return;
+		const payload = `${JSON.stringify(body)}\n`;
+		res.writeHead(status, {
+			"content-type": "application/json; charset=utf-8",
+			"content-length": Buffer.byteLength(payload),
+			"cache-control": "no-store"
+		});
+		res.end(payload);
 	}
 };
 /** 请求体上限，和 `time-routes.ts` 保持一致。 */
@@ -3256,15 +3364,7 @@ var TimeRoutes = class {
 	* `dsh-app:` / `file:` 是桌面壳，Node 客户端（测试）不带 Origin，都放行。
 	*/
 	originAllowed(req) {
-		const origin = req.headers.origin;
-		if (typeof origin !== "string" || origin === "") return true;
-		try {
-			const parsed = new URL(origin);
-			if (parsed.protocol === "dsh-app:" || parsed.protocol === "file:") return true;
-			return parsed.host === req.headers.host;
-		} catch {
-			return false;
-		}
+		return isSameOriginRequest(req, this.options.warn);
 	}
 	rejectForeignOrigin(res) {
 		this.sendJson(res, 403, {
@@ -3352,7 +3452,10 @@ var TimeRoutes = class {
 			this.badRequest(res, error);
 			return;
 		}
-		const raw = body !== null && typeof body === "object" ? body.minutes : void 0;
+		const record = body !== null && typeof body === "object" ? body : {};
+		const raw = record.minutes;
+		/** 「扫描设备」已经找到的端口优先用，避免再次自动探测出现不一致；只接受 COMx。 */
+		const scannedPort = typeof record.port === "string" && /^COM\d{1,3}$/i.test(record.port.trim()) ? record.port.trim() : void 0;
 		if (typeof raw !== "number" || !Number.isInteger(raw) || raw < MIN_MINUTES || raw > MAX_MINUTES) {
 			this.sendJson(res, 400, {
 				ok: false,
@@ -3424,7 +3527,7 @@ var TimeRoutes = class {
 		const unix = Math.floor(Date.now() / 1e3);
 		let port = null;
 		try {
-			port = await findBoardPort(this.options.serialPort);
+			port = scannedPort ?? await findBoardPort(this.options.serialPort);
 			if (port === null) {
 				this.sendJson(res, 200, {
 					ok: false,
@@ -3632,6 +3735,16 @@ async function apply(ctx, config = {}) {
 		warn: (message) => logger.warn(message)
 	});
 	for (const problem of await firmwareRoutes.selfCheck()) logger.error(`airremote: ${problem.message}`);
+	/**
+	* 「扫描设备」：GET /airremote/ports。只在用户点按钮时枚举串口（不打开、不占锁）；
+	* 打开设置页本身不触发任何串口 / 自动对时动作。
+	*/
+	const portsRoute = new PortsRoute({
+		list: () => listBoardPorts(),
+		log: (message) => logger.info(message),
+		warn: (message) => logger.warn(message)
+	});
+	logger.info("airremote: serial stays idle until an explicit scan/flash/time action");
 	const serialRoutes = new SerialRoutes({
 		holder: serialHolder,
 		log: (message) => logger.info(message),
@@ -3646,6 +3759,10 @@ async function apply(ctx, config = {}) {
 		{
 			path: "/airremote/firmware/image",
 			handler: firmwareRoutes.imageHandler
+		},
+		{
+			path: "/airremote/ports",
+			handler: portsRoute.handler
 		},
 		{
 			path: "/airremote/serial-state",

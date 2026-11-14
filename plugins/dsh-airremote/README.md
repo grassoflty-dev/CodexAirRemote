@@ -95,7 +95,7 @@ plugin_manager remove_bundle  dsh-airremote
 ### 安装后
 
 到 **Plugins → Installed** 启用 `dsh-airremote`，然后：
-- 设置页只有一个 **Air remote** 条目，页面内含「开发板时间」与「固件烧录」两块；
+- 设置页只有一个 **Air remote** 条目，页面内含「开发板时间」与「固件烧录」两块；烧录前先点 **「扫描设备」** 检查开发板（宿主只枚举串口，不打开端口），扫到后再点「开始烧录」；
 - 在官方语音输入设置里把输入设备选为 **Air remote (ESP32-C6)**；
 - 首次使用先在设置页烧录内置固件（烧录按段写入，保留 NVS）。
 

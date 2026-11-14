@@ -10,6 +10,7 @@
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import { isSameOriginRequest } from './origin.js'
 import { BoardSyncError, findBoardPort, syncBoardTime, type BoardSyncErrorCode } from './serial-port.js'
 import type { SerialHolder } from './serial-holder.js'
 import type { SyncGate } from './sync-gate.js'
@@ -99,15 +100,7 @@ export class TimeRoutes {
    * `dsh-app:` / `file:` 是桌面壳，Node 客户端（测试）不带 Origin，都放行。
    */
   private originAllowed(req: IncomingMessage): boolean {
-    const origin = req.headers.origin
-    if (typeof origin !== 'string' || origin === '') return true
-    try {
-      const parsed = new URL(origin)
-      if (parsed.protocol === 'dsh-app:' || parsed.protocol === 'file:') return true
-      return parsed.host === req.headers.host
-    } catch {
-      return false
-    }
+    return isSameOriginRequest(req, this.options.warn)
   }
 
   private rejectForeignOrigin(res: ServerResponse): void {
@@ -187,7 +180,10 @@ export class TimeRoutes {
       this.badRequest(res, error)
       return
     }
-    const raw = body !== null && typeof body === 'object' ? (body as { minutes?: unknown }).minutes : undefined
+    const record = body !== null && typeof body === 'object' ? (body as Record<string, unknown>) : {}
+    const raw = record.minutes
+    /** 「扫描设备」已经找到的端口优先用，避免再次自动探测出现不一致；只接受 COMx。 */
+    const scannedPort = typeof record.port === 'string' && /^COM\d{1,3}$/i.test(record.port.trim()) ? record.port.trim() : undefined
     if (typeof raw !== 'number' || !Number.isInteger(raw) || raw < MIN_MINUTES || raw > MAX_MINUTES) {
       this.sendJson(res, 400, {
         ok: false,
@@ -255,7 +251,7 @@ export class TimeRoutes {
     const unix = Math.floor(Date.now() / 1000)
     let port: string | null = null
     try {
-      port = await findBoardPort(this.options.serialPort)
+      port = scannedPort ?? (await findBoardPort(this.options.serialPort))
       if (port === null) {
         this.sendJson(res, 200, {
           ok: false,

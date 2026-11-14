@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { DevBoardTime } from './DevBoardTime.js'
 import { FirmwareFlash } from './FirmwareFlash.js'
 
@@ -7,11 +8,13 @@ import { FirmwareFlash } from './FirmwareFlash.js'
  * puts them on one page so Settings shows one "Air remote" entry instead of two.
  */
 export function AirRemoteSettings() {
+  /** 「扫描设备」找到的端口：时间同步优先用它，避免再次自动探测。 */
+  const [board, setBoard] = useState<string | null>(null)
   return (
     <section style={{ display: 'flex', flexDirection: 'column', gap: '20px', padding: '4px 2px' }}>
-      <DevBoardTime />
+      <DevBoardTime port={board} />
       <div aria-hidden="true" style={{ height: '1px', background: 'rgba(128, 128, 128, 0.25)' }} />
-      <FirmwareFlash />
+      <FirmwareFlash onBoardChange={setBoard} />
     </section>
   )
 }

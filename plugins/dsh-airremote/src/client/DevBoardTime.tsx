@@ -62,7 +62,7 @@ function formatLocalTime(unix: number): string {
  * the explicit button press, or automatically on host startup / board session
  * when 「自动对时」 is on (the default); this panel never polls.
  */
-export function DevBoardTime() {
+export function DevBoardTime({ port }: { port?: string | null }) {
   const selectId = useId()
   const autoSyncId = useId()
   const [timezone, setTimezone] = useState(DEFAULT_TIMEZONE)
@@ -159,7 +159,7 @@ export function DevBoardTime() {
         const { status: httpStatus, data } = await requestJson<SyncTimeResponse>('/airremote/sync-time', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ minutes })
+          body: JSON.stringify(port === null || port === undefined || port === '' ? { minutes } : { minutes, port })
         })
         if (httpStatus === 200 && data.ok === true) {
           const port = typeof data.port === 'string' && data.port !== '' ? data.port : '串口'

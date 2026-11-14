@@ -12,6 +12,7 @@
  */
 
 import { createReadStream } from 'node:fs'
+import { isSameOriginRequest } from './origin.js'
 import { readFile, stat } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { join } from 'node:path'
@@ -261,15 +262,7 @@ export class FirmwareRoutes {
 
   /** 与 `time-routes.ts` 相同的同源策略。 */
   private originAllowed(req: IncomingMessage): boolean {
-    const origin = req.headers.origin
-    if (typeof origin !== 'string' || origin === '') return true
-    try {
-      const parsed = new URL(origin)
-      if (parsed.protocol === 'dsh-app:' || parsed.protocol === 'file:') return true
-      return parsed.host === req.headers.host
-    } catch {
-      return false
-    }
+    return isSameOriginRequest(req, this.options.warn)
   }
 
   private rejectForeignOrigin(res: ServerResponse): void {

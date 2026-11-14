@@ -9,6 +9,7 @@
 import type { IncomingMessage } from 'node:http'
 import type { Duplex } from 'node:stream'
 import { BoardDiscovery } from './discovery.js'
+import { isSameOriginRequest } from './origin.js'
 import { BoardSession, type BoardEndReason, type BoardState, type SimulationTarget } from './board-session.js'
 import { acceptWebSocket, type WsConnection } from './ws.js'
 import type { AirRemoteHostConfig } from './config.js'
@@ -121,15 +122,7 @@ export class AudioRoute {
    * Origin and are allowed.
    */
   private originAllowed(req: IncomingMessage): boolean {
-    const origin = req.headers.origin
-    if (typeof origin !== 'string' || origin === '') return true
-    try {
-      const parsed = new URL(origin)
-      if (parsed.protocol === 'dsh-app:' || parsed.protocol === 'file:') return true
-      return parsed.host === req.headers.host
-    } catch {
-      return false
-    }
+    return isSameOriginRequest(req, this.options.logger)
   }
 
   private start(active: ActiveSession, _message: BrowserMessage): void {

@@ -58,11 +58,6 @@ export declare class FlashRoute {
     constructor(options: FlashRouteOptions);
     /** `webServer.registerUpgrade` handler。 */
     readonly handler: (req: IncomingMessage, socket: Duplex, head: Buffer) => void;
-    /**
-     * 与 `audio-route.ts` 完全相同的同源策略：页面请求会带 Origin，必须和 Host 一致；
-     * `dsh-app:` / `file:` 是桌面壳，Node 客户端（测试）不带 Origin，都放行。
-     */
-    private originAllowed;
     /** 只在有连接时开一个 interval；只发 ping，不因空闲关闭。 */
     private ensureHeartbeat;
     private stopHeartbeat;

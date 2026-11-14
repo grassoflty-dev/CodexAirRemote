@@ -23,13 +23,15 @@ import { useCallback, useEffect, useRef, useState } from 'react'
  * 已有烧录在跑时再发 start 会收到 `{type:'error', code:'busy'}`，但**连接不再断开**，
  * 所以它按普通错误显示、并保持可重试；`ping` 等未知 / 心跳消息一律静默忽略。
  *
- * 挂载只做两件事：GET `/airremote/firmware/manifest`、建立**一次** WS。不自动烧录、
- * 不轮询、不监听插拔；断线后只有用户点「重新连接」才会重连。
+ * 挂载只做一件事：GET `/airremote/firmware/manifest`。**不自动连接 WS**；
+ * 用户点「扫描设备」→ GET `/airremote/ports`（宿主只枚举串口），点「开始烧录」时才
+ * 懒连接 `/airremote/flash`。不轮询、不监听插拔；断线原因（code/reason）直接显示。
  */
 
 const MAX_LOG_LINES = 200
 const SUPPORTED_CHIP = 'esp32c6'
 const FLASH_WS_PATH = '/airremote/flash'
+const PORTS_PATH = '/airremote/ports'
 const NVS_WARNING =
   '烧录按段写入 bootloader / 分区表 / app / ota，不写 NVS 分区：开发板上的蓝牙配对、Wi-Fi 配网与时区都会保留。若烧录后仍出现配对异常，请在 Windows 删除该设备后重新配对。'
 const NVS_CONFIRM = '烧录会保留开发板上的蓝牙配对、Wi-Fi 配网与时区（不写 NVS 分区）。'
@@ -51,7 +53,20 @@ interface FirmwareManifest {
 /** 宿主回报的烧录阶段。`busy` 表示宿主侧已有一次烧录在跑。 */
 type ServerPhase = 'idle' | 'busy' | 'running' | 'done' | 'error' | 'cancelled'
 
-type Connection = 'connecting' | 'open' | 'closed'
+/** 只有用户点「扫描设备」或「开始烧录」之后才会离开 idle。 */
+type Connection = 'idle' | 'connecting' | 'open' | 'closed'
+
+interface ScannedPort {
+  path: string
+  vendorId?: string
+  productId?: string
+}
+
+type ScanState =
+  | { status: 'idle'; ports: ScannedPort[]; board: null; message?: string }
+  | { status: 'scanning'; ports: ScannedPort[]; board: null }
+  | { status: 'done'; ports: ScannedPort[]; board: string | null; message?: string }
+  | { status: 'error'; ports: ScannedPort[]; board: null; message: string }
 
 type Status =
   | { kind: 'info'; text: string }
@@ -131,10 +146,13 @@ function readPhase(value: unknown): ServerPhase | null {
  * 设置区块：只有「固件身份 + 开始/取消 + 进度 + 日志」。
  * 串口选择、VID/PID、擦除整片这些都属于宿主侧决策，浏览器不再参与。
  */
-export function FirmwareFlash() {
+export function FirmwareFlash({ onBoardChange }: { onBoardChange?: (board: string | null) => void }) {
   const [manifest, setManifest] = useState<FirmwareManifest | null>(null)
   const [manifestError, setManifestError] = useState<string | null>(null)
-  const [connection, setConnection] = useState<Connection>('connecting')
+  /** 初始「未扫描」：不自动连接、不显示「已断开」。 */
+  const [connection, setConnection] = useState<Connection>('idle')
+  const [closeInfo, setCloseInfo] = useState<{ code: number; reason: string } | null>(null)
+  const [scan, setScan] = useState<ScanState>({ status: 'idle', ports: [], board: null })
   const [phase, setPhase] = useState<ServerPhase>('idle')
   const [startSent, setStartSent] = useState(false)
   const [cancelSent, setCancelSent] = useState(false)
@@ -143,6 +161,7 @@ export function FirmwareFlash() {
   const [lines, setLines] = useState<string[]>([])
 
   const socketRef = useRef<WebSocket | null>(null)
+  const startAfterConnect = useRef(false)
   const logBoxRef = useRef<HTMLDivElement | null>(null)
 
   const appendLine = useCallback((line: string) => {
@@ -243,18 +262,37 @@ export function FirmwareFlash() {
   )
 
   /**
-   * 建一次连接。只有两种调用者：挂载时（一次）+ 用户点「重新连接」。
-   * 没有重连定时器，onclose 之后不会再自己连回去。
+   * 建一次 `/airremote/flash` 连接。**只在用户点「开始烧录」时**调用（懒连接），
+   * 打开设置页不会碰它，所以页面不会一打开就提示「已断开」。
+   * 连接 URL 用 `document.baseURI`（与 DSH 自身 `openConnectionWebSocket` 一致），
+   * 避免 Electron / 子路径部署下 `location.host` 拼错。
    */
-  const connect = useCallback(() => {
+  const connect = useCallback((alsoStart = false) => {
     const current = socketRef.current
-    if (current !== null && (current.readyState === WebSocket.CONNECTING || current.readyState === WebSocket.OPEN)) return
+    if (current !== null && (current.readyState === WebSocket.CONNECTING || current.readyState === WebSocket.OPEN)) {
+      if (alsoStart && current.readyState === WebSocket.OPEN) {
+        current.send(JSON.stringify({ type: 'start' }))
+        setStartSent(true)
+      } else if (alsoStart) {
+        startAfterConnect.current = true
+      }
+      return
+    }
 
-    const url = `${location.protocol === 'https:' ? 'wss://' : 'ws://'}${location.host}${FLASH_WS_PATH}`
+    startAfterConnect.current = alsoStart
+    let url: string
+    try {
+      const parsed = new URL(FLASH_WS_PATH.slice(1), document.baseURI)
+      parsed.protocol = parsed.protocol === 'https:' ? 'wss:' : 'ws:'
+      url = parsed.href
+    } catch {
+      url = `${location.protocol === 'https:' ? 'wss://' : 'ws://'}${location.host}${FLASH_WS_PATH}`
+    }
     let socket: WebSocket
     try {
       socket = new WebSocket(url)
     } catch (error) {
+      startAfterConnect.current = false
       setConnection('closed')
       setStatus({ kind: 'error', text: `连接烧录服务失败：${errorText(error)}` })
       return
@@ -262,11 +300,17 @@ export function FirmwareFlash() {
 
     socketRef.current = socket
     setConnection('connecting')
+    setCloseInfo(null)
     setStatus(null)
 
     socket.onopen = () => {
       if (socketRef.current !== socket) return
       setConnection('open')
+      if (startAfterConnect.current) {
+        startAfterConnect.current = false
+        socket.send(JSON.stringify({ type: 'start' }))
+        setStartSent(true)
+      }
     }
     socket.onmessage = (event: MessageEvent) => {
       if (socketRef.current !== socket) return
@@ -274,12 +318,15 @@ export function FirmwareFlash() {
     }
     // 出错后浏览器一定会再触发 onclose，断线状态统一在 onclose 里收口。
     socket.onerror = () => undefined
-    socket.onclose = () => {
+    socket.onclose = (event: CloseEvent) => {
       if (socketRef.current !== socket) return
       socketRef.current = null
+      startAfterConnect.current = false
       setConnection('closed')
+      setCloseInfo({ code: event.code, reason: event.reason })
       setStartSent(false)
       setCancelSent(false)
+      setStatus({ kind: 'error', text: `烧录服务连接断开（code=${String(event.code)}${event.reason === '' ? '' : `，${event.reason}`}）` })
     }
   }, [handleServerMessage])
 
@@ -317,9 +364,8 @@ export function FirmwareFlash() {
     }
   }, [])
 
-  // 挂载：连一次 WS；卸载时只关闭自己那条连接。
+  // 卸载时只关闭自己那条连接；**挂载时不再自动连接**（按需烧录）。
   useEffect(() => {
-    connect()
     return () => {
       const socket = socketRef.current
       socketRef.current = null
@@ -330,7 +376,7 @@ export function FirmwareFlash() {
       socket.onclose = null
       socket.close()
     }
-  }, [connect])
+  }, [])
 
   // 日志自动滚到底。
   useEffect(() => {
@@ -338,11 +384,46 @@ export function FirmwareFlash() {
     if (box !== null) box.scrollTop = box.scrollHeight
   }, [lines])
 
+  /** 「扫描设备」：请宿主枚举串口（只 list、不打开），结果驱动烧录可用性并传给时间区。 */
+  const scanPorts = useCallback(async () => {
+    setScan({ status: 'scanning', ports: [], board: null })
+    setStatus(null)
+    try {
+      const response = await fetch(PORTS_PATH, { headers: { Accept: 'application/json' }, cache: 'no-store' })
+      const body = (await response.json().catch(() => null)) as unknown
+      const record = typeof body === 'object' && body !== null ? (body as Record<string, unknown>) : {}
+      const rawPorts = Array.isArray(record.ports) ? record.ports : []
+      const ports: ScannedPort[] = []
+      for (const entry of rawPorts) {
+        if (typeof entry !== 'object' || entry === null) continue
+        const port = entry as Record<string, unknown>
+        if (typeof port.path !== 'string' || port.path === '') continue
+        ports.push({
+          path: port.path,
+          ...(typeof port.vendorId === 'string' ? { vendorId: port.vendorId } : {}),
+          ...(typeof port.productId === 'string' ? { productId: port.productId } : {})
+        })
+      }
+      if (!response.ok || record.ok === false) {
+        const message = typeof record.message === 'string' && record.message !== '' ? record.message : `HTTP ${response.status}`
+        setScan({ status: 'error', ports, board: null, message })
+        onBoardChange?.(null)
+        return
+      }
+      const board = typeof record.board === 'string' && record.board !== '' ? record.board : null
+      setScan({ status: 'done', ports, board })
+      onBoardChange?.(board)
+    } catch (error) {
+      setScan({ status: 'error', ports: [], board: null, message: errorText(error) })
+      onBoardChange?.(null)
+    }
+  }, [onBoardChange])
+
   /** 往宿主发一条指令；连接不在时给出可见提示而不是静默失败。 */
   const send = useCallback((payload: { type: string }): boolean => {
     const socket = socketRef.current
     if (socket === null || socket.readyState !== WebSocket.OPEN) {
-      setStatus({ kind: 'error', text: '烧录服务未连接，请先点「重新连接」。' })
+      setStatus({ kind: 'error', text: '烧录服务尚未连接，点「开始烧录」会先建立连接。' })
       return false
     }
     socket.send(JSON.stringify(payload))
@@ -351,7 +432,11 @@ export function FirmwareFlash() {
 
   const manifestChipOk = manifest !== null && manifest.chip.toLowerCase() === SUPPORTED_CHIP
   const inFlight = phase === 'running' || startSent
-  const canStart = connection === 'open' && manifest !== null && manifestChipOk && !inFlight
+  const scannedBoard = scan.board
+  const scanning = scan.status === 'scanning'
+  const canScan = !inFlight && !scanning
+  const canStart =
+    manifest !== null && manifestChipOk && !inFlight && !scanning && scannedBoard !== null && connection !== 'connecting'
   const canCancel = connection === 'open' && phase === 'running' && !cancelSent
 
   const handleStart = useCallback(() => {
@@ -381,10 +466,17 @@ export function FirmwareFlash() {
     setProgress(null)
     setLines([])
     setCancelSent(false)
-    setStatus({ kind: 'info', text: '已发送烧录指令，等待宿主接管串口…' })
-    if (!send({ type: 'start' })) return
+    if (connection === 'open') {
+      setStatus({ kind: 'info', text: '已发送烧录指令，等待宿主接管串口…' })
+      if (!send({ type: 'start' })) return
+      setStartSent(true)
+      return
+    }
+    // 懒连接：先连 `/airremote/flash`，open 后自动发 start。
+    setStatus({ kind: 'info', text: '正在连接烧录服务…' })
     setStartSent(true)
-  }, [inFlight, manifest, manifestChipOk, send])
+    connect(true)
+  }, [connect, connection, inFlight, manifest, manifestChipOk, send])
 
   const handleCancel = useCallback(() => {
     if (!canCancel) return
@@ -454,39 +546,52 @@ export function FirmwareFlash() {
 
       <div style={{ fontSize: '11px', opacity: 0.6, lineHeight: 1.55 }}>{NVS_WARNING}</div>
 
-      {connection === 'closed' ? (
-        <div
-          role="status"
-          style={{
-            display: 'flex',
-            gap: '8px',
-            alignItems: 'center',
-            flexWrap: 'wrap',
-            fontSize: '12px',
-            lineHeight: 1.55,
-            padding: '6px 8px',
-            borderRadius: '6px',
-            background: 'rgba(229, 83, 75, 0.1)',
-            color: '#e5534b'
-          }}
+      {/* 扫描设备：初始中性提示，只有点按钮才请宿主枚举串口（不打开、不占锁）。 */}
+      <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', fontSize: '12px' }}>
+        <button
+          type="button"
+          disabled={!canScan}
+          onClick={() => void scanPorts()}
+          style={{ ...controlStyle, cursor: canScan ? 'pointer' : 'default', opacity: canScan ? 1 : 0.6 }}
         >
-          <span>已断开，点「重新连接」</span>
-          <button
-            type="button"
-            onClick={connect}
-            style={{ ...controlStyle, padding: '2px 8px', cursor: 'pointer', color: 'inherit' }}
-          >
-            重新连接
-          </button>
+          {scanning ? '扫描中…' : '扫描设备'}
+        </button>
+        <span style={{ lineHeight: 1.55 }} data-testid="airremote-scan-status">
+          {scan.status === 'idle'
+            ? '未扫描设备｜点「扫描设备」检查开发板是否已连接'
+            : scan.status === 'scanning'
+              ? '正在扫描串口（只枚举，不打开）…'
+              : scan.status === 'error'
+                ? `扫描失败：${scan.message}`
+                : scan.board !== null
+                  ? `已找到开发板：${scan.board}`
+                  : '未找到开发板，请检查 USB 连接后重试'}
+        </span>
+      </div>
+      {scan.status === 'done' && scan.ports.length > 0 ? (
+        <div style={{ fontSize: '11px', opacity: 0.7, lineHeight: 1.55 }}>
+          {scan.ports.map((port) => (
+            <div key={port.path}>
+              {port.path}
+              {port.vendorId === undefined ? '' : ` · VID ${port.vendorId}`}
+              {port.productId === undefined ? '' : ` · PID ${port.productId}`}
+            </div>
+          ))}
         </div>
-      ) : connection === 'connecting' ? (
-        <div style={mutedStyle}>正在连接烧录服务…</div>
+      ) : null}
+      {connection === 'connecting' ? <div style={mutedStyle}>正在连接烧录服务…</div> : null}
+      {connection === 'closed' && closeInfo !== null ? (
+        <div style={{ fontSize: '11px', opacity: 0.6, lineHeight: 1.55 }}>
+          烧录服务连接已断开：code={closeInfo.code}
+          {closeInfo.reason === '' ? '' : `，${closeInfo.reason}`}
+        </div>
       ) : null}
 
       <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
         <button
           type="button"
           disabled={!canStart}
+          title={scannedBoard === null ? '先点「扫描设备」找到开发板' : undefined}
           onClick={handleStart}
           style={{ ...controlStyle, cursor: canStart ? 'pointer' : 'default', opacity: canStart ? 1 : 0.6 }}
         >

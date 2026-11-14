@@ -149,6 +149,78 @@ export async function findBoardPort(preferred = ''): Promise<string | null> {
   return fromDevices.length > 0 ? fromDevices[0] : null
 }
 
+/** 一个可用于「扫描设备」的串口候选。 */
+export interface BoardPortInfo {
+  path: string
+  vendorId?: string
+  productId?: string
+}
+
+/** `GET /airremote/ports` 的结果；`ok:false` 表示枚举本身失败（不是没插板）。 */
+export interface BoardPortScan {
+  ok: boolean
+  ports: BoardPortInfo[]
+  board: string | null
+  code?: string
+  message?: string
+}
+
+/**
+ * 枚举串口并找出 ESP32-C6（VID 303A）——**只 list，不打开端口**，不占串口锁。
+ * `list`/`fallback` 仅用于测试注入；生产走 `SerialPort.list()` + 注册表/PnP 兜底。
+ */
+export async function listBoardPorts(options: {
+  list?: () => Promise<PortInfo[]>
+  fallback?: () => Promise<string[]>
+} = {}): Promise<BoardPortScan> {
+  const ports: BoardPortInfo[] = []
+  const push = (path: string | undefined, vendorId?: string, productId?: string): void => {
+    const value = (path ?? '').trim()
+    if (value === '') return
+    if (ports.some((port) => port.path.toUpperCase() === value.toUpperCase())) return
+    ports.push({
+      path: value,
+      ...(vendorId === undefined || vendorId === '' ? {} : { vendorId: vendorId.toUpperCase() }),
+      ...(productId === undefined || productId === '' ? {} : { productId: productId.toUpperCase() })
+    })
+  }
+
+  try {
+    if (options.list !== undefined) {
+      for (const port of await options.list()) push(port.path, port.vendorId, (port as { productId?: string }).productId)
+    } else {
+      const module = await loadSerialport()
+      if (module !== undefined) {
+        for (const port of await module.SerialPort.list()) {
+          push(port.path, port.vendorId, (port as { productId?: string }).productId)
+        }
+      }
+    }
+  } catch (error) {
+    if (options.list !== undefined) {
+      return { ok: false, code: 'serial-error', message: toString(error), ports, board: null }
+    }
+    /* 真实 serialport 枚举失败：继续走注册表兜底，不让一次失败变成「没有串口」。 */
+  }
+
+  if (ports.length === 0) {
+    const fallback = options.fallback ?? (async (): Promise<string[]> => {
+      const fromRegistry = await comPortsFrom(POWERSHELL_REGISTRY_SCRIPT)
+      if (fromRegistry.length > 0) return fromRegistry
+      return comPortsFrom(POWERSHELL_PNP_SCRIPT)
+    })
+    // 两条兜底脚本都只查 VID_303A，所以这些端口就是开发板候选。
+    for (const path of await fallback()) push(path, ESPRESSIF_VENDOR_ID)
+  }
+
+  const board = ports.find((port) => (port.vendorId ?? '').toUpperCase() === ESPRESSIF_VENDOR_ID)?.path ?? null
+  return { ok: true, ports, board }
+}
+
+function toString(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
 /** 读 `HKLM\SYSTEM\CurrentControlSet\Enum\USB` 下 `VID_303A*` 设备的 `Device Parameters\PortName`。 */
 const POWERSHELL_REGISTRY_SCRIPT = String.raw`
 $ErrorActionPreference = 'SilentlyContinue'

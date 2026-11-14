@@ -9,7 +9,8 @@ import { FakeBoard } from './host/fake-board.js'
 import { resolveHostConfig, simulatedToken, type AirRemoteHostConfigOverrides } from './host/config.js'
 import { FirmwareRoutes } from './host/firmware-routes.js'
 import { FlashRoute } from './host/flash-route.js'
-import { findBoardPort } from './host/serial-port.js'
+import { PortsRoute } from './host/ports-route.js'
+import { findBoardPort, listBoardPorts } from './host/serial-port.js'
 import { SerialHolder, SerialRoutes } from './host/serial-holder.js'
 import { SyncGate } from './host/sync-gate.js'
 import { TimeRoutes } from './host/time-routes.js'
@@ -161,6 +162,17 @@ export async function apply(ctx: Context, config: AirRemoteHostConfigOverrides =
     logger.error(`airremote: ${problem.message}`)
   }
 
+  /**
+   * 「扫描设备」：GET /airremote/ports。只在用户点按钮时枚举串口（不打开、不占锁）；
+   * 打开设置页本身不触发任何串口 / 自动对时动作。
+   */
+  const portsRoute = new PortsRoute({
+    list: () => listBoardPorts(),
+    log: (message) => logger.info(message),
+    warn: (message) => logger.warn(message)
+  })
+  logger.info('airremote: serial stays idle until an explicit scan/flash/time action')
+
   const serialRoutes = new SerialRoutes({
     holder: serialHolder,
     log: (message) => logger.info(message),
@@ -170,6 +182,7 @@ export async function apply(ctx: Context, config: AirRemoteHostConfigOverrides =
   const extraRoutes: { path: string; handler: (req: IncomingMessage, res: ServerResponse) => Promise<void> }[] = [
     { path: '/airremote/firmware/manifest', handler: firmwareRoutes.manifestHandler },
     { path: '/airremote/firmware/image', handler: firmwareRoutes.imageHandler },
+    { path: '/airremote/ports', handler: portsRoute.handler },
     { path: '/airremote/serial-state', handler: serialRoutes.stateHandler },
     { path: '/airremote/serial-hold', handler: serialRoutes.holdHandler }
   ]
