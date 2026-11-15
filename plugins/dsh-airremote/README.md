@@ -43,11 +43,11 @@ ESP32-C6 ──WSS 47683──▶ host（TLS 客户端 + UDP 47682 发现）
    ```powershell
    cd plugins/dsh-airremote
    npm pack --pack-destination E:\Develop\airremote-dist
-   # 产物：E:\Develop\airremote-dist\dsh-airremote-0.5.5.tgz
+   # 产物：E:\Develop\airremote-dist\dsh-airremote-0.5.7.tgz
    ```
 2. 交给 DSH 官方插件管理入口安装（`target` = tarball 的**绝对路径**）：
    ```text
-   plugin_manager install_bundle  E:\Develop\airremote-dist\dsh-airremote-0.5.5.tgz
+   plugin_manager install_bundle  E:\Develop\airremote-dist\dsh-airremote-0.5.7.tgz
    ```
 3. 到 **Plugins → Installed** 启用 `dsh-airremote`；**host 侧代码安装后 HMR 即生效**（实测新路由不重启也能用），
    客户端 UI 需要**刷新页面（Ctrl+R）**加载新模块；刷新仍无效再完全重启 DSH。
