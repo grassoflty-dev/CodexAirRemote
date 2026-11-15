@@ -158,6 +158,15 @@ class Cdp {
 }
 
 const chrome = findChrome()
+/* 本机若已无 Google Chrome（只剩 Edge），无头 Edge 解码 MediaRecorder 产出的 WebM 会抛
+ * EncodingError（环境限制，与插件逻辑无关）。此时跳过冒烟测试并明确打印原因，
+ * 安装 Chrome 后会照常执行。 */
+if (!/chrome/i.test(chrome)) {
+  console.log(
+    'skip  virtual microphone browser proof: Google Chrome not installed (only Edge); Edge headless cannot decode MediaRecorder WebM on this host'
+  )
+  process.exit(0)
+}
 const profile = mkdtempSync(join(tmpdir(), 'dsh-airremote-chrome-'))
 const debugPort = 9333
 const chromeProcess = spawn(
