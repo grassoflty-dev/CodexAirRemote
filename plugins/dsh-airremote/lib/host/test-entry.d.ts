@@ -18,5 +18,5 @@ export { NVS_FLASH_START, NVS_FLASH_END } from './firmware-routes.js';
 export { FlashRoute } from './flash-route.js';
 export { PortsRoute } from './ports-route.js';
 export { isSameOriginRequest, isLoopbackHostname } from './origin.js';
-export { listBoardPorts } from './serial-port.js';
+export { listBoardPorts, probeSerialport, classifySerialportFailure } from './serial-port.js';
 export { DEFAULT_TIMEZONE, TIMEZONE_OPTIONS, minutesForTimezone, systemOffsetMinutes } from '../time-zones.js';

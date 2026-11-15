@@ -6,7 +6,7 @@
 
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
-import { AudioRoute, BoardDiscovery, BoardSession, FakeBoard, acceptWebSocket, connectWebSocket, firmwareFileArray, NVS_FLASH_END, NVS_FLASH_START, PortsRoute, listBoardPorts, isSameOriginRequest } from './dist/host-test.js'
+import { AudioRoute, BoardDiscovery, BoardSession, FakeBoard, acceptWebSocket, connectWebSocket, firmwareFileArray, NVS_FLASH_END, NVS_FLASH_START, PortsRoute, listBoardPorts, isSameOriginRequest, probeSerialport, classifySerialportFailure } from './dist/host-test.js'
 
 const TOKEN = 'a'.repeat(64)
 const SIM_PORT = 48684
@@ -300,4 +300,34 @@ console.log('all host integration tests passed')
     false
   )
   console.log('ok  /airremote/ports scan (board hit, none, origin 403, injected lister, 405)')
+}
+
+
+// --- serial port native-module failure classification -----------------------
+{
+  const missing = Object.assign(new Error("Cannot find module '@serialport/bindings-cpp'"), {
+    code: 'MODULE_NOT_FOUND'
+  })
+  const classified = classifySerialportFailure(missing)
+  assert.equal(classified.code, 'serial-native-missing')
+  assert.match(classified.message, /完全退出 DSH/u)
+
+  const probe = await probeSerialport(() => {
+    throw missing
+  })
+  assert.equal(probe.ok, false)
+  assert.equal(probe.code, 'serial-native-missing')
+
+  const okProbe = await probeSerialport(() => ({ SerialPort: { list: async () => [] } }))
+  assert.equal(okProbe.ok, true)
+
+  const other = classifySerialportFailure(new Error('open failed'))
+  assert.equal(other.code, 'serialport-unavailable')
+
+  // listBoardPorts surfaces the serial probe on injected paths too
+  const scan = await listBoardPorts({ list: async () => [{ path: 'COM3', vendorId: '303A', productId: '1001' }] })
+  assert.equal(scan.ok, true)
+  assert.equal(scan.serial.ok, true)
+  assert.equal(scan.board, 'COM3')
+  console.log('ok  serial native-module failure -> serial-native-missing')
 }

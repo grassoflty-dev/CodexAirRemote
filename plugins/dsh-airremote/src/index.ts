@@ -10,7 +10,7 @@ import { resolveHostConfig, simulatedToken, type AirRemoteHostConfigOverrides } 
 import { FirmwareRoutes } from './host/firmware-routes.js'
 import { FlashRoute } from './host/flash-route.js'
 import { PortsRoute } from './host/ports-route.js'
-import { findBoardPort, listBoardPorts } from './host/serial-port.js'
+import { findBoardPort, listBoardPorts, probeSerialport } from './host/serial-port.js'
 import { SerialHolder, SerialRoutes } from './host/serial-holder.js'
 import { SyncGate } from './host/sync-gate.js'
 import { TimeRoutes } from './host/time-routes.js'
@@ -40,6 +40,13 @@ export const inject = ['webServer']
 export async function apply(ctx: Context, config: AirRemoteHostConfigOverrides = {}): Promise<void> {
   const resolved = resolveHostConfig(config)
   const logger = ctx.logger('dsh-airremote')
+
+  /* 启动即探测一次串口原生模块（失败只 warn，不阻塞插件加载），
+   * 这样每次启动日志里都能一眼看出原生模块是否可用。 */
+  void probeSerialport().then((probe) => {
+    if (probe.ok) logger.info('airremote: serialport native module ready')
+    else logger.warn(`airremote: serialport unavailable (${probe.code ?? 'unknown'}): ${probe.detail ?? probe.message ?? ''}`)
+  })
 
   const discovery = new BoardDiscovery({ port: resolved.discoveryPort })
   try {

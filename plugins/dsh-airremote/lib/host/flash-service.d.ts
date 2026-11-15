@@ -24,7 +24,7 @@ import { type FirmwareManifest } from './firmware-routes.js';
  */
 export declare const FLASH_BAUD_RATE = 460800;
 /** 与 manifest 对不上的错误码。 */
-export type FlashErrorCode = 'no-board' | 'open-failed' | 'timeout' | 'rejected' | 'busy' | 'internal' | 'sha256-mismatch' | 'cancelled';
+export type FlashErrorCode = 'no-board' | 'open-failed' | 'timeout' | 'rejected' | 'busy' | 'internal' | 'sha256-mismatch' | 'serial-native-missing' | 'cancelled';
 /** 烧录失败：`code` 直接对应契约里的错误码，`message` 是给人看的中文。 */
 export declare class FlashError extends Error {
     readonly code: FlashErrorCode;

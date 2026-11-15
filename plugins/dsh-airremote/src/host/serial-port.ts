@@ -78,6 +78,7 @@ interface SerialportModule {
 
 let serialportProbe: Promise<SerialportModule | undefined> | undefined
 let serialportFailure = ''
+let serialportFailureKind = ''
 
 /** 排障开关：`AIRREMOTE_SERIAL_FORCE_PS=1` 时绕开 serialport，强制走 PowerShell 通道。 */
 function serialportDisabled(): boolean {
@@ -106,6 +107,7 @@ async function loadSerialport(): Promise<SerialportModule | undefined> {
       return { SerialPort }
     } catch (error) {
       serialportFailure = error instanceof Error ? error.message : String(error)
+      serialportFailureKind = classifySerialportFailure(error).code
       return undefined
     }
   })()
@@ -115,6 +117,68 @@ async function loadSerialport(): Promise<SerialportModule | undefined> {
 /** `serialport` 不可用时的原因（空串表示可用或还没探测过），用于日志与排查。 */
 export function serialportFailureReason(): string {
   return serialportFailure
+}
+
+/** `serialport` 不可用时的错误码（`serial-native-missing` / `serialport-unavailable`）。 */
+export function serialportFailureCode(): string {
+  return serialportFailureKind
+}
+
+/** 串口模块探测结果；`ok:false` 时带可操作文案。 */
+export interface SerialportProbe {
+  ok: boolean
+  code?: string
+  message?: string
+  /** 原始错误信息（只进日志，不进 UI 主文案）。 */
+  detail?: string
+}
+
+/**
+ * 区分「原生模块没装/没找到」与其它串口错误。
+ * 前者通常发生在：DSH 正在运行时更新插件 → pnpm 替换 `@serialport/bindings-cpp`
+ * 被 Windows 文件锁挡住（ERR_PNPM_EPERM）→ 目录短暂不完整 → require 找不到。
+ */
+export function classifySerialportFailure(error: unknown): { code: string; message: string } {
+  const detail = error instanceof Error ? error.message : String(error)
+  const code =
+    error !== null && typeof error === 'object' ? (error as { code?: unknown }).code : undefined
+  const missing =
+    code === 'MODULE_NOT_FOUND' ||
+    code === 'ERR_MODULE_NOT_FOUND' ||
+    /Cannot find module|ERR_MODULE_NOT_FOUND/i.test(detail)
+  if (missing) {
+    return {
+      code: 'serial-native-missing',
+      message:
+        '串口原生模块不可用（常见于更新插件时 DSH 仍在运行、文件被占用）。请完全退出 DSH 后重试；仍失败请重新安装插件。'
+    }
+  }
+  return { code: 'serialport-unavailable', message: `串口模块不可用：${detail}` }
+}
+
+/** 探测一次串口模块；`load` 仅供单测注入失败路径。 */
+export async function probeSerialport(load?: () => unknown): Promise<SerialportProbe> {
+  if (load !== undefined) {
+    try {
+      const loaded = load() as { SerialPort?: { list(): Promise<unknown> } } | undefined
+      const SerialPort = loaded?.SerialPort
+      if (typeof SerialPort?.list !== 'function') throw new Error('serialport 里没有导出 SerialPort')
+      await SerialPort.list()
+      return { ok: true }
+    } catch (error) {
+      const classified = classifySerialportFailure(error)
+      return {
+        ok: false,
+        code: classified.code,
+        message: classified.message,
+        detail: error instanceof Error ? error.message : String(error)
+      }
+    }
+  }
+  const module = await loadSerialport()
+  if (module !== undefined) return { ok: true }
+  const classified = classifySerialportFailure(serialportFailure)
+  return { ok: false, code: serialportFailureKind || classified.code, message: classified.message, detail: serialportFailure }
 }
 
 /* ------------------------------------------------------------------ *
@@ -163,6 +227,8 @@ export interface BoardPortScan {
   board: string | null
   code?: string
   message?: string
+  /** 串口模块本身是否可用（即使退化到注册表枚举也会如实报告）。 */
+  serial: SerialportProbe
 }
 
 /**
@@ -174,6 +240,7 @@ export async function listBoardPorts(options: {
   fallback?: () => Promise<string[]>
 } = {}): Promise<BoardPortScan> {
   const ports: BoardPortInfo[] = []
+  const serial = options.list !== undefined ? { ok: true } : await probeSerialport()
   const push = (path: string | undefined, vendorId?: string, productId?: string): void => {
     const value = (path ?? '').trim()
     if (value === '') return
@@ -198,7 +265,7 @@ export async function listBoardPorts(options: {
     }
   } catch (error) {
     if (options.list !== undefined) {
-      return { ok: false, code: 'serial-error', message: toString(error), ports, board: null }
+      return { ok: false, code: 'serial-error', message: toString(error), ports, board: null, serial }
     }
     /* 真实 serialport 枚举失败：继续走注册表兜底，不让一次失败变成「没有串口」。 */
   }
@@ -214,7 +281,7 @@ export async function listBoardPorts(options: {
   }
 
   const board = ports.find((port) => (port.vendorId ?? '').toUpperCase() === ESPRESSIF_VENDOR_ID)?.path ?? null
-  return { ok: true, ports, board }
+  return { ok: true, ports, board, serial }
 }
 
 function toString(error: unknown): string {

@@ -35,6 +35,7 @@ import {
   type EspTransport,
   type SerialPortEntry
 } from './serial-transport.js'
+import { classifySerialportFailure } from './serial-port.js'
 
 /**
  * 烧录用的名义波特率。
@@ -56,6 +57,7 @@ export type FlashErrorCode =
   | 'busy'
   | 'internal'
   | 'sha256-mismatch'
+  | 'serial-native-missing'
   | 'cancelled'
 
 /** 烧录失败：`code` 直接对应契约里的错误码，`message` 是给人看的中文。 */
@@ -180,7 +182,11 @@ export async function flashFirmware(options: FlashFirmwareOptions): Promise<Flas
       entry = await findSerialPortEntry(port)
     } catch (error) {
       // serialport 原生绑定不可用：烧录没法继续，但不能说成「没插板子」。
-      throw new FlashError('internal', `串口不可用（${port}）：${describe(error)}`)
+      const classified = classifySerialportFailure(error)
+      throw new FlashError(
+        classified.code === 'serial-native-missing' ? 'serial-native-missing' : 'internal',
+        `串口不可用（${port}）：${classified.message}（${describe(error)}）`
+      )
     }
     if (entry === undefined) {
       throw new FlashError('no-board', `未找到串口 ${port}（ESP32-C6 没插好，或 USB 驱动还没就绪）`)

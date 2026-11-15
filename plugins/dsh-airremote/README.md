@@ -82,6 +82,11 @@ plugin_manager install_bundle  link:E:\Develop\CodexAirRemote\plugins\dsh-airrem
 
 ### 更新
 
+> ⚠️ **更新插件前必须先完全退出 DSH**（托盘退出 / 结束所有 `DeepSeek Harness.exe` 进程）。
+> Windows 会锁住已加载的 `@serialport/bindings-cpp` 原生 `.node`，DSH 运行中更新会让 pnpm 替换
+> 该目录失败（`ERR_PNPM_EPERM`），插件随后报「串口原生模块不可用 / Cannot find module」。
+> 若已经这样报错：退出 DSH 再重开即可恢复（依赖目录会被写回完整），一般**不需要重装**。
+
 - 索引/本地目录：在 **Plugins** 里对该插件执行 Update，或重新 `install_bundle` 同一来源；
 - tarball：生成新版本 tarball（`npm pack`）后用同一 `install_bundle` 指向新 tgz；
 - 插件版本号与内置固件版本号是两套（见「两套版本号」一节）。

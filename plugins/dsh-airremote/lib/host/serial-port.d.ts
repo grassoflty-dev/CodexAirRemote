@@ -32,6 +32,27 @@ interface PortInfo {
 }
 /** `serialport` 不可用时的原因（空串表示可用或还没探测过），用于日志与排查。 */
 export declare function serialportFailureReason(): string;
+/** `serialport` 不可用时的错误码（`serial-native-missing` / `serialport-unavailable`）。 */
+export declare function serialportFailureCode(): string;
+/** 串口模块探测结果；`ok:false` 时带可操作文案。 */
+export interface SerialportProbe {
+    ok: boolean;
+    code?: string;
+    message?: string;
+    /** 原始错误信息（只进日志，不进 UI 主文案）。 */
+    detail?: string;
+}
+/**
+ * 区分「原生模块没装/没找到」与其它串口错误。
+ * 前者通常发生在：DSH 正在运行时更新插件 → pnpm 替换 `@serialport/bindings-cpp`
+ * 被 Windows 文件锁挡住（ERR_PNPM_EPERM）→ 目录短暂不完整 → require 找不到。
+ */
+export declare function classifySerialportFailure(error: unknown): {
+    code: string;
+    message: string;
+};
+/** 探测一次串口模块；`load` 仅供单测注入失败路径。 */
+export declare function probeSerialport(load?: () => unknown): Promise<SerialportProbe>;
 /**
  * 找一个 ESP32-C6 的串口。
  *
@@ -53,6 +74,8 @@ export interface BoardPortScan {
     board: string | null;
     code?: string;
     message?: string;
+    /** 串口模块本身是否可用（即使退化到注册表枚举也会如实报告）。 */
+    serial: SerialportProbe;
 }
 /**
  * 枚举串口并找出 ESP32-C6（VID 303A）——**只 list，不打开端口**，不占串口锁。

@@ -96,6 +96,8 @@ const ERROR_TEXT: Record<string, string> = {
   rejected: '板子拒绝了命令',
   busy: '串口正被占用',
   'sha256-mismatch': '固件文件损坏（sha256 不匹配）',
+  'serial-native-missing':
+    '串口原生模块不可用（常见于更新插件时 DSH 仍在运行、文件被占用）。请完全退出 DSH 后重试；仍失败请重新安装插件。',
   cancelled: '已取消'
 }
 
@@ -180,6 +182,8 @@ export function FirmwareFlash({
   const [connection, setConnection] = useState<Connection>('idle')
   const [closeInfo, setCloseInfo] = useState<{ code: number; reason: string } | null>(null)
   const [scan, setScan] = useState<ScanState>({ status: 'idle', ports: [], board: null })
+  /** `/airremote/ports` 顺带回传的串口模块健康状态（失败原因直接展示）。 */
+  const [serialProbe, setSerialProbe] = useState<{ ok: boolean; code?: string; message?: string } | null>(null)
   const [phase, setPhase] = useState<ServerPhase>('idle')
   const [startSent, setStartSent] = useState(false)
   const [cancelSent, setCancelSent] = useState(false)
@@ -457,6 +461,20 @@ export function FirmwareFlash({
         onBoardChange?.(null)
         return
       }
+      const serialRecord = record.serial
+      const serial =
+        typeof serialRecord === 'object' && serialRecord !== null
+          ? {
+              ok: (serialRecord as { ok?: unknown }).ok !== false,
+              ...((serialRecord as { code?: unknown }).code === undefined
+                ? {}
+                : { code: String((serialRecord as { code?: unknown }).code) }),
+              ...((serialRecord as { message?: unknown }).message === undefined
+                ? {}
+                : { message: String((serialRecord as { message?: unknown }).message) })
+            }
+          : null
+      setSerialProbe(serial)
       const board = typeof record.board === 'string' && record.board !== '' ? record.board : null
       setScan({ status: 'done', ports, board })
       onBoardChange?.(board)
@@ -615,6 +633,12 @@ export function FirmwareFlash({
                   : '未找到开发板，请检查 USB 连接后重试'}
         </span>
       </div>
+      {serialProbe !== null && !serialProbe.ok ? (
+        <div role="status" style={{ fontSize: '11px', lineHeight: 1.55, color: '#e5534b' }}>
+          {serialProbe.message ??
+            '串口原生模块不可用（常见于更新插件时 DSH 仍在运行、文件被占用）。请完全退出 DSH 后重试；仍失败请重新安装插件。'}
+        </div>
+      ) : null}
       {scan.status === 'done' && scan.ports.length > 0 ? (
         <div style={{ fontSize: '11px', opacity: 0.7, lineHeight: 1.55 }}>
           {scan.ports.map((port) => (

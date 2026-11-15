@@ -968,6 +968,8 @@ var BoardSyncError = class extends Error {
 	}
 };
 let serialportProbe;
+let serialportFailure = "";
+let serialportFailureKind = "";
 /** 排障开关：`AIRREMOTE_SERIAL_FORCE_PS=1` 时绕开 serialport，强制走 PowerShell 通道。 */
 function serialportDisabled() {
 	return (process.env.AIRREMOTE_SERIAL_FORCE_PS ?? "").trim() === "1";
@@ -979,7 +981,10 @@ function serialportDisabled() {
 */
 async function loadSerialport$1() {
 	serialportProbe ??= (async () => {
-		if (serialportDisabled()) return;
+		if (serialportDisabled()) {
+			serialportFailure = "AIRREMOTE_SERIAL_FORCE_PS=1";
+			return;
+		}
 		try {
 			const loaded = require$1("serialport");
 			const SerialPort = loaded.SerialPort ?? loaded.default?.SerialPort;
@@ -987,11 +992,54 @@ async function loadSerialport$1() {
 			await SerialPort.list();
 			return { SerialPort };
 		} catch (error) {
-			error instanceof Error && error.message;
+			serialportFailure = error instanceof Error ? error.message : String(error);
+			serialportFailureKind = classifySerialportFailure(error).code;
 			return;
 		}
 	})();
 	return serialportProbe;
+}
+/**
+* 区分「原生模块没装/没找到」与其它串口错误。
+* 前者通常发生在：DSH 正在运行时更新插件 → pnpm 替换 `@serialport/bindings-cpp`
+* 被 Windows 文件锁挡住（ERR_PNPM_EPERM）→ 目录短暂不完整 → require 找不到。
+*/
+function classifySerialportFailure(error) {
+	const detail = error instanceof Error ? error.message : String(error);
+	const code = error !== null && typeof error === "object" ? error.code : void 0;
+	if (code === "MODULE_NOT_FOUND" || code === "ERR_MODULE_NOT_FOUND" || /Cannot find module|ERR_MODULE_NOT_FOUND/i.test(detail)) return {
+		code: "serial-native-missing",
+		message: "串口原生模块不可用（常见于更新插件时 DSH 仍在运行、文件被占用）。请完全退出 DSH 后重试；仍失败请重新安装插件。"
+	};
+	return {
+		code: "serialport-unavailable",
+		message: `串口模块不可用：${detail}`
+	};
+}
+/** 探测一次串口模块；`load` 仅供单测注入失败路径。 */
+async function probeSerialport(load) {
+	if (load !== void 0) try {
+		const SerialPort = load()?.SerialPort;
+		if (typeof SerialPort?.list !== "function") throw new Error("serialport 里没有导出 SerialPort");
+		await SerialPort.list();
+		return { ok: true };
+	} catch (error) {
+		const classified = classifySerialportFailure(error);
+		return {
+			ok: false,
+			code: classified.code,
+			message: classified.message,
+			detail: error instanceof Error ? error.message : String(error)
+		};
+	}
+	if (await loadSerialport$1() !== void 0) return { ok: true };
+	const classified = classifySerialportFailure(serialportFailure);
+	return {
+		ok: false,
+		code: serialportFailureKind || classified.code,
+		message: classified.message,
+		detail: serialportFailure
+	};
 }
 /**
 * 找一个 ESP32-C6 的串口。
@@ -1019,6 +1067,7 @@ async function findBoardPort(preferred = "") {
 */
 async function listBoardPorts(options = {}) {
 	const ports = [];
+	const serial = options.list !== void 0 ? { ok: true } : await probeSerialport();
 	const push = (path, vendorId, productId) => {
 		const value = (path ?? "").trim();
 		if (value === "") return;
@@ -1041,7 +1090,8 @@ async function listBoardPorts(options = {}) {
 			code: "serial-error",
 			message: toString(error),
 			ports,
-			board: null
+			board: null,
+			serial
 		};
 	}
 	if (ports.length === 0) {
@@ -1055,7 +1105,8 @@ async function listBoardPorts(options = {}) {
 	return {
 		ok: true,
 		ports,
-		board: ports.find((port) => (port.vendorId ?? "").toUpperCase() === "303A")?.path ?? null
+		board: ports.find((port) => (port.vendorId ?? "").toUpperCase() === "303A")?.path ?? null,
+		serial
 	};
 }
 function toString(error) {
@@ -2675,7 +2726,8 @@ async function flashFirmware(options) {
 		try {
 			entry = await findSerialPortEntry(port);
 		} catch (error) {
-			throw new FlashError("internal", `串口不可用（${port}）：${describe$1(error)}`);
+			const classified = classifySerialportFailure(error);
+			throw new FlashError(classified.code === "serial-native-missing" ? "serial-native-missing" : "internal", `串口不可用（${port}）：${classified.message}（${describe$1(error)}）`);
 		}
 		if (entry === void 0) throw new FlashError("no-board", `未找到串口 ${port}（ESP32-C6 没插好，或 USB 驱动还没就绪）`);
 		device = new NodeSerialPortDevice(port, entry.vendorId !== void 0 ? Number.parseInt(entry.vendorId, 16) : void 0, entry.productId !== void 0 ? Number.parseInt(entry.productId, 16) : void 0);
@@ -3629,6 +3681,10 @@ const inject = ["webServer"];
 async function apply(ctx, config = {}) {
 	const resolved = resolveHostConfig(config);
 	const logger = ctx.logger("dsh-airremote");
+	probeSerialport().then((probe) => {
+		if (probe.ok) logger.info("airremote: serialport native module ready");
+		else logger.warn(`airremote: serialport unavailable (${probe.code ?? "unknown"}): ${probe.detail ?? probe.message ?? ""}`);
+	});
 	const discovery = new BoardDiscovery({ port: resolved.discoveryPort });
 	try {
 		await discovery.start();

@@ -444,6 +444,7 @@ window.__ModuleLoader__.load({
 			rejected: "板子拒绝了命令",
 			busy: "串口正被占用",
 			"sha256-mismatch": "固件文件损坏（sha256 不匹配）",
+			"serial-native-missing": "串口原生模块不可用（常见于更新插件时 DSH 仍在运行、文件被占用）。请完全退出 DSH 后重试；仍失败请重新安装插件。",
 			cancelled: "已取消"
 		};
 		function errorText(error) {
@@ -509,6 +510,8 @@ window.__ModuleLoader__.load({
 				ports: [],
 				board: null
 			});
+			/** `/airremote/ports` 顺带回传的串口模块健康状态（失败原因直接展示）。 */
+			const [serialProbe, setSerialProbe] = (0, react.useState)(null);
 			const [phase, setPhase] = (0, react.useState)("idle");
 			const [startSent, setStartSent] = (0, react.useState)(false);
 			const [cancelSent, setCancelSent] = (0, react.useState)(false);
@@ -785,6 +788,13 @@ window.__ModuleLoader__.load({
 						onBoardChange?.(null);
 						return;
 					}
+					const serialRecord = record.serial;
+					const serial = typeof serialRecord === "object" && serialRecord !== null ? {
+						ok: serialRecord.ok !== false,
+						...serialRecord.code === void 0 ? {} : { code: String(serialRecord.code) },
+						...serialRecord.message === void 0 ? {} : { message: String(serialRecord.message) }
+					} : null;
+					setSerialProbe(serial);
 					const board = typeof record.board === "string" && record.board !== "" ? record.board : null;
 					setScan({
 						status: "done",
@@ -1005,6 +1015,15 @@ window.__ModuleLoader__.load({
 							children: scan.status === "idle" ? "未扫描设备｜点「扫描设备」检查开发板是否已连接" : scan.status === "scanning" ? "正在扫描串口（只枚举，不打开）…" : scan.status === "error" ? `扫描失败：${scan.message}` : scan.board !== null ? `已找到开发板：${scan.board}` : "未找到开发板，请检查 USB 连接后重试"
 						})]
 					}),
+					serialProbe !== null && !serialProbe.ok ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+						role: "status",
+						style: {
+							fontSize: "11px",
+							lineHeight: 1.55,
+							color: "#e5534b"
+						},
+						children: serialProbe.message ?? "串口原生模块不可用（常见于更新插件时 DSH 仍在运行、文件被占用）。请完全退出 DSH 后重试；仍失败请重新安装插件。"
+					}) : null,
 					scan.status === "done" && scan.ports.length > 0 ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
 						style: {
 							fontSize: "11px",
