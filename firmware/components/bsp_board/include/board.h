@@ -40,6 +40,11 @@ lv_display_t *board_display(void);
  * 角度；实际生效角度用 board_display_rotation() 读。调用时需持有 LVGL 锁。 */
 int board_display_rotation_set(int degrees);
 int board_display_rotation(void);
+/* One-shot completion callback for an async rotation request. The callback
+ * runs in the LVGL task after the request resolves (applied angle + result).
+ * Pass NULL to clear. Callback type is shared with lvgl_bsp.h. */
+void board_display_set_rotation_done_cb(void (*callback)(int applied_degrees, int result));
+
 
 /* LVGL adapter lock (recursive use from tasks is not required). */
 bool board_lock(int timeout_ms);

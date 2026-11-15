@@ -70,6 +70,27 @@ static lv_obj_t *bright_track;
 static lv_obj_t *bright_knob;
 static lv_obj_t *bright_value;
 static lv_obj_t *rotate_label;
+static lv_obj_t *rotate_hint;
+
+/* 旋转与设置页 overlay 的交接：overlay 是不透明全屏（480x480），旋转时的整屏
+ * 重绘会把它一起算进去，LVGL 池只剩 ~1 KB 时 lv_draw_add_task 空指针 panic
+ * （2026-11-15 真机事故）。因此旋转前隐藏 overlay、按需删掉它回收内存，
+ * 旋转完成/失败后再统一恢复（刷新/滑条/按钮全部重建）。 */
+static bool rotation_in_progress;
+static bool rotation_overlay_dropped;
+static int rotation_last_result;
+static lv_timer_t *rotation_begin_timer;
+static lv_timer_t *rotation_restore_timer;
+static lv_timer_t *rotation_safety_timer;
+
+static void rotation_begin_cb(lv_timer_t *timer);
+static void rotation_done_cb(int applied_degrees, int result);
+static void rotation_restore_cb(lv_timer_t *timer);
+static void rotation_safety_cb(lv_timer_t *timer);
+static void settings_overlay_drop(void);
+static void settings_overlay_restore(void);
+static void rotation_hint_set(const char *text);
+static void panel_show(bool show);
 
 static lv_indev_t *touch_indev;
 static lv_obj_t *panel_screen;
@@ -170,21 +191,27 @@ static void close_clicked_cb(lv_event_t *event)
  */
 static void rotate_clicked_cb(lv_event_t *event)
 {
-    int applied;
-
     (void)event;
+
+    if (!panel_open || rotation_in_progress) return;
+
     rotate_target = (rotate_target + 90) % 360;
-    applied = board_display_rotation_set(rotate_target);
-    if (applied != rotate_target)
+    rotation_in_progress = true;
+    rotation_last_result = 0;
+    rotation_hint_set("");
+
+    /* 先隐藏 overlay，并让主页面先刷一帧；真正写 MADCTL 放到下个 tick
+     * （rotation_begin_cb），避免在 touch 事件派发过程中删除/重排对象树。 */
+    panel_show(false);
+    lv_obj_invalidate(lv_screen_active());
+    if (rotation_begin_timer != NULL)
     {
-        rotate_target = applied;
+        lv_timer_delete(rotation_begin_timer);
+        rotation_begin_timer = NULL;
     }
-    if (rotate_label != NULL)
-    {
-        lv_label_set_text_fmt(rotate_label, "%d deg", applied);
-    }
+    rotation_begin_timer = lv_timer_create(rotation_begin_cb, 40, NULL);
+    lv_timer_set_repeat_count(rotation_begin_timer, 1);
     app_ui_note_activity();
-    ESP_LOGI(TAG, "settings: rotation request %d (applied %d)", rotate_target, applied);
 }
 
 static lv_obj_t *panel_label(lv_obj_t *parent, const char *text, const lv_font_t *font,
@@ -251,6 +278,9 @@ static void panel_build(void)
     lv_obj_set_style_text_color(rotate_label, lv_color_hex(PANEL_MUTED), 0);
     lv_obj_align(rotate_label, LV_ALIGN_BOTTOM_MID, 0, -16);
 
+    /* 旋转失败/内存不足时的可见提示（默认空）。 */
+    rotate_hint = panel_label(overlay, "", &lv_font_montserrat_20, 0xe5534b, 24, 226);
+
     panel_label(overlay, "Brightness", &lv_font_montserrat_20, PANEL_MUTED, BRIGHT_X1, 52);
     bright_value = panel_label(overlay, "60%", &lv_font_montserrat_28, 0xffffff, BRIGHT_X1 + 96, 44);
 
@@ -308,6 +338,147 @@ static void panel_show(bool show)
     if (overlay == NULL) return;
     if (show) lv_obj_move_to_index(overlay, -1);
     lv_obj_set_hidden(overlay, !show);
+}
+
+/* 回收 overlay 占用的 LVGL 池：整棵对象树删除，旋转恢复时按需重建。 */
+static void settings_overlay_drop(void)
+{
+    lv_mem_monitor_t mon;
+
+    if (overlay == NULL) return;
+    lv_obj_del(overlay);
+    overlay = NULL;
+    rotate_label = NULL;
+    rotate_hint = NULL;
+    bright_value = NULL;
+    bright_track = NULL;
+    bright_knob = NULL;
+    bright_hot = NULL;
+    panel_built = false;
+    rotation_overlay_dropped = true;
+    lv_obj_invalidate(lv_screen_active());
+    lv_mem_monitor(&mon);
+    ESP_LOGI(TAG, "settings: rotation: overlay dropped to reclaim lvgl, free=%u biggest=%u",
+             (unsigned)mon.free_size, (unsigned)mon.free_biggest_size);
+}
+
+/* 恢复设置页：被删掉则重建整棵对象树，再按需重绘，保证滑条/按钮/关闭都可用。 */
+static void settings_overlay_restore(void)
+{
+    lv_mem_monitor_t mon;
+
+    if (rotation_overlay_dropped)
+    {
+        rotation_overlay_dropped = false;
+        if (!panel_built) panel_build();
+    }
+    if (overlay == NULL) return;
+    panel_show(true);
+    brightness_refresh_widgets();
+    lv_obj_invalidate(overlay);
+    lv_mem_monitor(&mon);
+    ESP_LOGI(TAG, "settings: rotation: overlay restored, mem free=%u biggest=%u",
+             (unsigned)mon.free_size, (unsigned)mon.free_biggest_size);
+}
+
+static void rotation_hint_set(const char *text)
+{
+    if (rotate_hint == NULL) return;
+    lv_label_set_text(rotate_hint, text);
+}
+
+/* 隐藏 overlay 后的下一 tick 才请求旋转：内存不足就先删 overlay 回收；仍不足
+ * 则放弃本次旋转（不动硬件），恢复 overlay 并给用户可见提示。 */
+static void rotation_begin_cb(lv_timer_t *timer)
+{
+    lv_mem_monitor_t mon;
+
+    (void)timer;
+    rotation_begin_timer = NULL;
+    if (!rotation_in_progress) return;
+
+    lv_mem_monitor(&mon);
+    if (mon.free_size < 4096 || mon.free_biggest_size < 2048)
+    {
+        ESP_LOGW(TAG, "settings: rotation: lvgl low before rotate (free=%u biggest=%u), reclaiming overlay",
+                 (unsigned)mon.free_size, (unsigned)mon.free_biggest_size);
+        settings_overlay_drop();
+        lv_mem_monitor(&mon);
+        if (mon.free_size < 4096 || mon.free_biggest_size < 2048)
+        {
+            ESP_LOGE(TAG, "settings: rotation skipped: lvgl memory too low free=%u biggest=%u",
+                     (unsigned)mon.free_size, (unsigned)mon.free_biggest_size);
+            rotation_last_result = 1; /* LVGL_ROTATION_LOW_MEM */
+            rotation_in_progress = false;
+            settings_overlay_restore();
+            rotation_hint_set("内存不足，请稍后重试");
+            return;
+        }
+    }
+
+    board_display_set_rotation_done_cb(rotation_done_cb);
+    ESP_LOGI(TAG, "settings: rotation request %d (current %d), overlay hidden, mem free=%u biggest=%u",
+             rotate_target, board_display_rotation(), (unsigned)mon.free_size,
+             (unsigned)mon.free_biggest_size);
+    (void)board_display_rotation_set(rotate_target);
+
+    /* 完成回调丢失时的兜底：800 ms 后无论如何恢复 overlay，设置页不能消失。 */
+    if (rotation_safety_timer != NULL) lv_timer_delete(rotation_safety_timer);
+    rotation_safety_timer = lv_timer_create(rotation_safety_cb, 800, NULL);
+    lv_timer_set_repeat_count(rotation_safety_timer, 1);
+}
+
+/* BSP 在 LVGL tick 里完成旋转（成功/内存不足/显示忙/MADCTL 失败）后回调这里。 */
+static void rotation_done_cb(int applied_degrees, int result)
+{
+    rotation_last_result = result;
+    if (applied_degrees != rotate_target) rotate_target = applied_degrees;
+
+    if (rotation_safety_timer != NULL)
+    {
+        lv_timer_delete(rotation_safety_timer);
+        rotation_safety_timer = NULL;
+    }
+    if (rotation_restore_timer != NULL) lv_timer_delete(rotation_restore_timer);
+    /* 延迟 ~120 ms 再恢复：让旋转后的整屏重绘先完成，否则 overlay 又会被算进
+     * 同一帧重绘，内存问题原样复现。 */
+    rotation_restore_timer = lv_timer_create(rotation_restore_cb, 120, NULL);
+    lv_timer_set_repeat_count(rotation_restore_timer, 1);
+}
+
+static void rotation_restore_cb(lv_timer_t *timer)
+{
+    lv_mem_monitor_t mon;
+
+    (void)timer;
+    rotation_restore_timer = NULL;
+    if (!rotation_in_progress) return;
+    rotation_in_progress = false;
+
+    settings_overlay_restore();
+    if (rotate_label != NULL) lv_label_set_text_fmt(rotate_label, "%d deg", rotate_target);
+    if (rotation_last_result == 1) rotation_hint_set("内存不足，请稍后重试");
+    else if (rotation_last_result == 2) rotation_hint_set("显示忙，请重试");
+    else if (rotation_last_result == 3) rotation_hint_set("旋转失败，请重试");
+
+    lv_mem_monitor(&mon);
+    ESP_LOGI(TAG, "settings: rotation done applied=%d result=%d, rotation %d, lvgl free=%u biggest=%u",
+             rotate_target, rotation_last_result, board_display_rotation(),
+             (unsigned)mon.free_size, (unsigned)mon.free_biggest_size);
+    app_ui_note_activity();
+}
+
+/* 完成回调超时兜底：保留原方向，恢复 overlay 并提示。 */
+static void rotation_safety_cb(lv_timer_t *timer)
+{
+    (void)timer;
+    rotation_safety_timer = NULL;
+    if (!rotation_in_progress) return;
+    rotation_in_progress = false;
+    rotation_last_result = 4;
+    ESP_LOGE(TAG, "settings: rotation aborted (no completion), restoring overlay");
+    settings_overlay_restore();
+    rotation_hint_set("旋转换向超时，请重试");
 }
 
 /* Indev level: sees every touch. Two jobs: open the panel from the top of the
@@ -430,6 +601,7 @@ void settings_panel_open(void)
     swipe_tracking = false;
     close_tracking = false;
     rotate_target = board_display_rotation();
+    rotation_hint_set("");
 
     brightness_refresh_widgets();
     panel_show(true);
@@ -445,6 +617,8 @@ void settings_panel_open(void)
 void settings_panel_close(void)
 {
     if (!panel_open) return;
+    /* 旋转的隐藏/恢复必须成对：进行中先忽略关闭，避免设置页永久消失。 */
+    if (rotation_in_progress) return;
 
     panel_open = false;
     swipe_tracking = false;

@@ -16,6 +16,8 @@ static const char *TAG = "lvgl_bsp";
 /* flush_wait 的超时上限。正常一帧的 DMA 传输是个位数毫秒，超过这个数说明
  * flush_ready 不会再来了，必须放弃等待而不是自旋到死。 */
 #define FLUSH_WAIT_TIMEOUT_MS 100
+/* 旋转请求等待"没有帧在飞"的上限：超过就放弃本次旋转，避免永久 pending。 */
+#define ROTATION_FLUSH_TIMEOUT_MS 200
 
 /* 旋转请求的消费周期：20 ms 一次，比一帧的传输时间短，用户感觉不到延迟。 */
 #define ROTATION_TICK_MS 20
@@ -27,6 +29,10 @@ static int display_rotation = 0;
  * tick 里、确认没有帧在飞之后才真正写 MADCTL。 */
 static volatile int pending_rotation = 0;
 static volatile bool rotation_pending = false;
+/* 旋转请求等待"无帧在飞"的起点；超过 ROTATION_FLUSH_TIMEOUT_MS 就放弃本次旋转。 */
+static uint32_t rotation_flush_since = 0;
+/* 一次性的旋转完成回调（settings_panel 注册，用于恢复 overlay）。 */
+static lvgl_rotation_done_cb_t rotation_done_cb = NULL;
 static unsigned flush_wait_timeouts = 0;
 
 /*
@@ -109,14 +115,19 @@ extern "C" int Lvgl_GetDisplayRotation(void)
  * 返回当前真正生效的角度。必须持有 LVGL 锁；运行中改方向请走
  * Lvgl_RequestDisplayRotation()。
  */
-extern "C" int Lvgl_SetDisplayRotation(int degrees)
+/* 写 MADCTL -> 改 LVGL 逻辑方向 -> 整屏 invalidate；返回实际生效角度，reason 报结果。
+ * 必须在 LVGL 任务里、且 overlay 已隐藏（调用方保证）之后调用：
+ * 整屏重绘需要 LVGL 池里的绘制任务内存，设置页 overlay 占满时只剩 ~1 KB 会 panic。 */
+static int apply_display_rotation(int degrees, lvgl_rotation_result_t *result)
 {
     lv_mem_monitor_t mon;
 
+    *result = LVGL_ROTATION_OK;
     if (disp == NULL || disp_port == NULL)
     {
         ESP_LOGE(TAG, "rotation: display not ready");
-        return 0;
+        *result = LVGL_ROTATION_SPI_FAIL;
+        return display_rotation;
     }
 
     degrees %= 360;
@@ -126,14 +137,37 @@ extern "C" int Lvgl_SetDisplayRotation(int degrees)
     }
     degrees = (degrees / 90) * 90;
 
+    /* 内存安全门：LVGL 池不足以完成一次整屏重绘时宁可放弃旋转，也不触发
+     * lv_draw_add_task 的空指针 Store access fault（2026-11-15 真机事故）。 */
+    lv_mem_monitor(&mon);
+    if (mon.free_size < 4096 || mon.free_biggest_size < 2048)
+    {
+        ESP_LOGE(TAG,
+                 "rotation skipped: lvgl memory too low free=%u biggest=%u (need >=4096/2048), keeping %d deg",
+                 (unsigned)mon.free_size, (unsigned)mon.free_biggest_size, display_rotation);
+        *result = LVGL_ROTATION_LOW_MEM;
+        return display_rotation;
+    }
+
     if (disp->flushing)
     {
         flush_wait_timeout_cb(disp);
     }
+    if (disp->flushing)
+    {
+        ESP_LOGE(TAG, "rotation aborted: frame still flushing after %d ms, keeping %d deg",
+                 FLUSH_WAIT_TIMEOUT_MS, display_rotation);
+        *result = LVGL_ROTATION_FLUSH_BUSY;
+        return display_rotation;
+    }
 
+    int previous = display_rotation;
     if (disp_port->Set_Rotate((uint16_t)degrees) != ESP_OK)
     {
-        ESP_LOGE(TAG, "rotation: MADCTL write failed, keeping %d deg", display_rotation);
+        ESP_LOGE(TAG, "rotation: MADCTL write failed, keeping %d deg", previous);
+        /* 写失败时最好回滚一次（多数失败是总线错误，回滚也可能失败，忽略返回值）。 */
+        (void)disp_port->Set_Rotate((uint16_t)previous);
+        *result = LVGL_ROTATION_SPI_FAIL;
         return display_rotation;
     }
 
@@ -142,14 +176,23 @@ extern "C" int Lvgl_SetDisplayRotation(int degrees)
     lv_obj_invalidate(lv_display_get_screen_active(disp));
 
     lv_mem_monitor(&mon);
-    ESP_LOGI(TAG, "rotation -> %d via MADCTL 0x%02x, logical %dx%d, flush_wait_timeouts=%u",
+    ESP_LOGI(TAG, "rotation -> %d via MADCTL 0x%02x, logical %dx%d, lvgl free=%u biggest=%u, flush_wait_timeouts=%u",
              display_rotation, (unsigned)disp_port->Get_Madctl(),
              (int)lv_display_get_horizontal_resolution(disp),
-             (int)lv_display_get_vertical_resolution(disp), flush_wait_timeouts);
-    ESP_LOGI(TAG, "rotation: lvgl free=%u biggest=%u before full repaint",
-             (unsigned)mon.free_size, (unsigned)mon.free_biggest_size);
-
+             (int)lv_display_get_vertical_resolution(disp),
+             (unsigned)mon.free_size, (unsigned)mon.free_biggest_size, flush_wait_timeouts);
     return display_rotation;
+}
+
+extern "C" int Lvgl_SetDisplayRotation(int degrees)
+{
+    lvgl_rotation_result_t unused;
+    return apply_display_rotation(degrees, &unused);
+}
+
+extern "C" void Lvgl_SetRotationDoneCallback(lvgl_rotation_done_cb_t callback)
+{
+    rotation_done_cb = callback;
 }
 
 /*
@@ -166,9 +209,11 @@ extern "C" int Lvgl_RequestDisplayRotation(int degrees)
     degrees = (degrees / 90) * 90;
 
     pending_rotation = degrees;
+    rotation_flush_since = 0;
     rotation_pending = true;
 
-    return degrees;
+    /* 返回当前已生效角度（请求是异步的；真正结果由完成回调给出）。 */
+    return display_rotation;
 }
 
 /*
@@ -179,6 +224,8 @@ extern "C" int Lvgl_RequestDisplayRotation(int degrees)
 static void rotation_timer_cb(lv_timer_t *timer)
 {
     int degrees;
+    lvgl_rotation_result_t result = LVGL_ROTATION_OK;
+    lvgl_rotation_done_cb_t done;
 
     (void)timer;
     if (!rotation_pending || disp == NULL || disp_port == NULL)
@@ -186,14 +233,44 @@ static void rotation_timer_cb(lv_timer_t *timer)
         return;
     }
 
+    /* 有帧在飞：先等，但最多等 ROTATION_FLUSH_TIMEOUT_MS（20 ms 一 tick 轮询）。
+     * 超时就放弃本次旋转、保留原方向并通知调用方，绝不无限 pending。 */
     if (disp->flushing)
     {
+        uint32_t waited;
+
+        if (rotation_flush_since == 0)
+        {
+            rotation_flush_since = lv_tick_get();
+        }
+        waited = lv_tick_elaps(rotation_flush_since);
+        if (waited <= ROTATION_FLUSH_TIMEOUT_MS)
+        {
+            return;
+        }
+        rotation_pending = false;
+        rotation_flush_since = 0;
+        ESP_LOGE(TAG, "settings: rotation aborted (flush busy %u ms), keeping %d deg",
+                 (unsigned)waited, display_rotation);
+        done = rotation_done_cb;
+        rotation_done_cb = NULL;
+        if (done != NULL)
+        {
+            done(display_rotation, LVGL_ROTATION_FLUSH_BUSY);
+        }
         return;
     }
 
+    rotation_flush_since = 0;
     degrees = pending_rotation;
     rotation_pending = false;
-    Lvgl_SetDisplayRotation(degrees);
+    (void)apply_display_rotation(degrees, &result);
+    done = rotation_done_cb;
+    rotation_done_cb = NULL;
+    if (done != NULL)
+    {
+        done(display_rotation, result);
+    }
 }
 
 esp_err_t Lvgl_lock(int timeout_ms)

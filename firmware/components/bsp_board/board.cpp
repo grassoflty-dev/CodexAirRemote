@@ -94,6 +94,11 @@ extern "C" int board_display_rotation(void)
     return Lvgl_GetDisplayRotation();
 }
 
+extern "C" void board_display_set_rotation_done_cb(void (*callback)(int applied_degrees, int result))
+{
+    Lvgl_SetRotationDoneCallback((lvgl_rotation_done_cb_t)callback);
+}
+
 extern "C" bool board_lock(int timeout_ms)
 {
     return Lvgl_lock(timeout_ms) == ESP_OK;

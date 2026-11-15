@@ -29,6 +29,19 @@ lv_display_t *Lvgl_GetDisplay(void);
  * 立即应用：会等当前帧传输结束（MADCTL 写命令与 QSPI 像素流不能交叠），
  * 因此仅在启动时（还没有任何帧在飞）调用。运行中改方向请用下面的请求接口。
  * 返回真正生效的角度（MADCTL 写失败时保持原方向）。必须持有 LVGL 锁。 */
+/* 旋转结果：BSP 在 LVGL tick 里处理完请求后，用完成回调告诉调用方结果。
+ * reason 供 UI 决定提示文案（内存不足 / 显示忙 / MADCTL 写失败 / 成功）。 */
+typedef enum {
+    LVGL_ROTATION_OK = 0,
+    LVGL_ROTATION_LOW_MEM = 1,
+    LVGL_ROTATION_FLUSH_BUSY = 2,
+    LVGL_ROTATION_SPI_FAIL = 3,
+} lvgl_rotation_result_t;
+
+/* 一次性的旋转完成回调（在 LVGL 任务上下文里调用，可以安全操作 UI）。 */
+typedef void (*lvgl_rotation_done_cb_t)(int applied_degrees, lvgl_rotation_result_t result);
+void Lvgl_SetRotationDoneCallback(lvgl_rotation_done_cb_t callback);
+
 int Lvgl_SetDisplayRotation(int degrees);
 
 /* 请求改方向：只记下目标角度，真正的 MADCTL 写、lv_display_set_rotation() 和
