@@ -34,8 +34,8 @@ ESP32-C6 ──WSS 47683──▶ host（TLS 客户端 + UDP 47682 发现）
 
 ## 安装 / 更新 / 卸载
 
-> 当前版本：插件 `0.5.5`，内置固件 `0.7.2`。已验证的 DSH：**0.2.2-rc.3**（Electron 44.7.0 / Node 24.21.0）；
-> 最低要求 `engines.dsh = ">=0.2.0-rc.1"`。
+> 仓库内插件 `0.5.7`，内置固件 `0.7.3`；Discover 仍提供 `0.5.5` / `0.7.2`。
+> `0.7.3` 已知旋转后可能持续上下错位，尚未通过旋转验收。已验证的 DSH：**0.2.2-rc.3**；最低要求 `>=0.2.0-rc.1`。
 
 ### 方式一：本地 tarball（最稳，推荐给离线/单机环境）
 
@@ -49,8 +49,7 @@ ESP32-C6 ──WSS 47683──▶ host（TLS 客户端 + UDP 47682 发现）
    ```text
    plugin_manager install_bundle  E:\Develop\airremote-dist\dsh-airremote-0.5.7.tgz
    ```
-3. 到 **Plugins → Installed** 启用 `dsh-airremote`；**host 侧代码安装后 HMR 即生效**（实测新路由不重启也能用），
-   客户端 UI 需要**刷新页面（Ctrl+R）**加载新模块；刷新仍无效再完全重启 DSH。
+3. 在 **Plugins → Installed** 确认 `dsh-airremote` 已启用。更新已装版本后重启 DSH，再核对设置页显示的内置固件版本。若更新报 `@serialport/bindings-cpp` 的 `EPERM`，请先确认占用文件的旧宿主已退出，再用官方安装入口重试；不要手工修改 profile。
 
 ### 方式二：从 DSH 插件索引安装（Discover）
 
@@ -188,88 +187,21 @@ UTC+1 柏林 / UTC+8 北京 / UTC+9 东京）、一个「同步到开发板」�
 
 ## 固件烧录
 
-设置页 → **Air remote** → 下方「固件烧录」块（`settings.section` id `airremote`）：把插件包里内置的合并镜像
-通过浏览器 **Web Serial** 写进开发板。host 不碰串口，只按静态文件把镜像流式下发。
+用数据线接入板子 → **设置 → Air remote → 固件烧录 → 扫描设备**。页面打开时不会自动扫描。确认端口和包内固件版本后点**开始烧录**，页面会显示进度与日志。
 
-- 面板先读 `GET /airremote/firmware/manifest`，显示内置固件：版本 `v0.7.2`、构建时间 `builtAt`
-  （`2026-11-13T09:39:57.759Z`）、大小 `size`（`4,686,640` 字节 ≈ 4.47 MB）、`sha256` 前 8 位
-  （`a6124033`，悬停可见完整值）、芯片 `esp32c6`。
-- 「选择串口」调 `navigator.serial.requestPort({ filters: [{ usbVendorId: 0x303a }] })`，只列
-  Espressif（VID `303A`）设备；选中后显示 VID / PID。
-- 「烧录」是一次显式点击，流程是：
-  1. 下载 `GET /airremote/firmware/image`（合并镜像）；
-  2. 浏览器端用 `crypto.subtle.digest('SHA-256', …)` 算摘要（同时核对字节数），与 manifest 比对，
-     不一致直接中止（「固件文件损坏（sha256 不匹配）」），**此时还没碰串口**；
-  3. `window.confirm` 二次确认：版本、sha256 前 8 位、芯片，并写明会清除 Wi-Fi 配网与时区；
-  4. `POST /airremote/serial-hold` 带 `{"holder":"flash"}` 抢串口；被 `sync` 占着时回 `busy` 并中止；
-  5. 动态 import esptool-js，`new Transport(port, true)` + `new ESPLoader({ baudrate: 460800 })`，
-     `loader.main()` 读出芯片描述，不是 ESP32-C6 系列立即中止；
-  6. `loader.writeFlash()`：offset **0x0**、`flashSize` / `flashMode` / `flashFreq` 全 `keep`、
-     `compress: true`；面板上的「擦除整片」默认**关闭**，勾选才传 `eraseAll: true`；
-  7. 进度条取 `reportProgress`（百分比 + 已写 / 总数），下方日志框保留最近 **200 行** esptool 输出；
-  8. 失败时状态行给具体原因（超时 / 串口掉线 / 不是 C6 / busy 等）和「重试」按钮；串口掉线会清掉
-     已选端口，重试先重新选口；
-  9. 收尾发 `loader.after('hard_reset')` 硬复位；`finally` 里先关浏览器侧串口（5 秒超时兜底），
-     再 `POST /airremote/serial-hold {"holder":"none"}` 释放，异常路径也不会把板子锁住。
+串口和 esptool-js 运行在 Windows DSH 宿主中，页面通过 DSH 的连接服务接收进度，不使用 Web Serial。宿主写入前核对镜像大小和 SHA-256，并与校时共用串口互斥。
 
-### 两套版本号：插件版本 ≠ 固件版本
+### 版本和数据保留
 
-- **插件版本**：`plugins/dsh-airremote/package.json` 的 `version`（当前 `0.5.5`）。指插件**自身**
-  （host / client / 路由）的版本，按 npm 包语义演进，`npm install` 与插件管理安装看的是它。
-- **固件版本**：`plugins/dsh-airremote/firmware/manifest.json` 的 `version`（当前 `0.7.2`）。指**随包
-  内置的 ESP32-C6 固件**版本，显示在设置页「固件烧录 / 固件 v0.7.2」，烧录前的 sha256 校验和二次确认
-  用的也是它。
-- 两者**故意解耦**：改插件代码不动固件版本，重打固件也不动插件版本，各自独立演进。所以打新固件时
-  务必用 `--version` 显式给固件版本（见下文），别拿 `package.json` 的插件版本当固件版本。
+- 插件版本见 [package.json](package.json)，内置固件版本和源码提交见 [manifest.json](firmware/manifest.json)。设置页显示的是**包内版本**；板上实际运行版本以启动日志 `App version` 为准。
+- 本包按四段写入：`0x0` bootloader、`0x8000` 分区表、`0x10d000` OTA 数据、`0x200000` 应用；跳过 `0x9000–0x10cfff` 的 NVS，保留蓝牙配对、Wi-Fi 配网和时区。**不要把合并镜像从 `0x0` 整片写入。**
+- 维护者烧录前备份 NVS；验收时核对烧前、烧后的 NVS 与蓝牙自动重连。
 
-### 前提：Chromium 内核 + 安全上下文
+### 构建与校验
 
-- Web Serial 只在 **Chromium 内核**（Chrome / Edge）且**安全上下文**下可用。`http://127.0.0.1:57648`
-  满足安全上下文，用 Chrome/Edge 直接打开即可。
-- **DSH 桌面（Electron）窗口禁用了 Web Serial**：`app.asar` 的 `lib/main.js` 里有
-  `setDevicePermissionHandler(() => false)`，桌面窗口拿不到 `navigator.serial`。所以在桌面窗口里
-  打开设置页会看到降级提示（「当前环境不支持 Web Serial…」）、「选择串口」置灰——这是预期行为，
-  不是故障。**要烧录请用 Chrome/Edge 打开同一个地址。**
-- 环境缺 WebCrypto 时也会禁用烧录（sha256 校验做不了）。
+镜像只在开发机上构建；插件运行时不调用 ESP-IDF 或 Python。按[维护者指南](../../docs/plugin-install-and-publish.md#维护者从源码构建与打包)同步 Git、从干净固件源码构建，再显式传入固件版本（`--version X.Y.Z` 或 `AIRREMOTE_FIRMWARE_VERSION`）。打包脚本拒绝诊断构建、版本来源不符或跨越擦除边界的镜像，不回退到旧合并产物。
 
-### 烧录保留 NVS（配对 / 配网 / 时区）
-
-0.7.2 / 插件 0.5.2 起**不再整片写 0x0**：`manifest.json` 带有 `regions` 表，插件按段写入
-`0x0 bootloader`、`0x8000 分区表`、`0x10d000 ota_data`、`0x200000 app`，**跳过
-`0x9000–0x107000` 的 NVS 分区**。因此烧固件**不会**清除：
-
-1. **蓝牙配对**（两台电脑的 bond 都保留，换机不需要重新配对）；
-2. Wi-Fi 配网；
-3. 时区设置。
-
-验证方式（开发/验收用）：烧前、烧后各读一次 NVS 区，sha256 必须完全一致；烧完 Windows
-**不删除设备**也应能直接连上。若旧版插件/旧 manifest（没有 `regions`）仍按整片写，插件会告警并退回
-旧行为——此时若出现配对异常，请在 Windows「设置 → 蓝牙和其他设备」**删除该设备后重新配对一次**。
-
-### 内置镜像怎么来的（开发侧，运行时绝不调用）
-
-`firmware/codex_air_remote-merged.bin` 与 `firmware/manifest.json` 都在开发机上生成，插件运行时
-只读这两个文件，**不会**调用 `idf` / `esptool` / python。
-
-```powershell
-idf -C firmware build
-cd plugins/dsh-airremote
-node scripts/bundle-firmware.mjs --version 0.7.2   # 打固件时显式给固件版本
-```
-
-版本号不再有脚本内置默认值，来源优先级：`--version <semver>` > 环境变量
-`AIRREMOTE_FIRMWARE_VERSION` > `plugins/dsh-airremote/package.json` 的 `version`（即插件版本）。
-三者都没有就报错退出；只想确认取到哪个版本、不生成镜像，可加 `--print-version`。
-注意兜底来源是**插件版本**（`0.5.5`），与固件版本别混用（见「两套版本号」），发布固件请按上面显式给版本。
-
-脚本做的事：跑 `idf -C firmware merge-bin`（失败回落到 `python -m esptool merge_bin`），把
-`firmware/build/merged-binary.bin`（0.7.2 为 `4,697,040` 字节）拷成
-`plugins/dsh-airremote/firmware/codex_air_remote-merged.bin`，再写 `manifest.json`
-（`size` / `sha256` / `builtAt` / `version` / `commit` / `chip` / `flashOffset` / **`regions`**）。
-`regions` 由 `firmware/build/flash_args` 生成（`{name, offset, size}` 四段，按偏移升序），
-插件运行时按它分段写入并跳过 NVS。
-合并偏移以 `firmware/build/flash_args` 为准：`0x0` bootloader、`0x8000` partition-table、
-`0x10d000` ota_data_initial、`0x200000` app。
+在本目录运行 `npm run check:firmware`，即可校验已内置镜像的 SHA-256、四段布局和 Git 来源；不需要连开发板。
 
 ## 数据目录
 

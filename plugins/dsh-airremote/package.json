@@ -65,7 +65,8 @@
   "scripts": {
     "build": "node build.mjs && tsc -p tsconfig.build.json",
     "check": "tsc --noEmit -p tsconfig.json",
-    "test": "node test/integration.mjs && node test/client-bundle.mjs && node test/browser.mjs",
+    "check:firmware": "node scripts/bundle-firmware.mjs --check",
+    "test": "npm run check:firmware && node test/integration.mjs && node test/client-bundle.mjs && node test/browser.mjs",
     "test:host": "node test/integration.mjs",
     "test:client": "node test/client-bundle.mjs",
     "test:browser": "node test/browser.mjs",

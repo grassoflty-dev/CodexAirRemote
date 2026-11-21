@@ -59,22 +59,15 @@
 
 ## 构建
 
-前置条件：
-
-- Windows 上已安装 ESP-IDF **5.5.5**，默认激活脚本为 `C:\Espressif\tools\Microsoft.v5.5.5.PowerShell_profile.ps1`。
-- 已运行过 `windows\Setup-Dev.ps1`，`windows/.venv` 与 `windows/.local` 存在。固件会把 `.local` 中的 `server.crt`、`server.key`、`pairing.txt` 编进镜像；缺失时 CMake 直接报错。
+先按仓库约定同步 `origin/main`，然后激活 ESP-IDF **5.5.5**。当前 C6 工程不依赖旧 Windows 辅助程序或其 `.local` 配对文件。
 
 ```powershell
 # 仓库根目录
-powershell -ExecutionPolicy Bypass -File .\firmware\Build.ps1
+. .\env\activate.ps1
+idf -C firmware build
 ```
 
-`Build.ps1` 的步骤：
-
-1. 若未设置 `$env:IDF_PATH`，加载默认激活脚本；也可用 `-IdfActivate` 或环境变量 `AIRREMOTE_IDF_ACTIVATE` 指定。
-2. 调用 `windows/.venv` 中的 Python 运行 `windows/tools/init_pairing.py`，确保配对材料存在。
-3. 运行 `idf.py build`，日志写入 `firmware/build/build.log`。
-4. 读取 `build/flasher_args.json`，对每个镜像计算 SHA-256，生成 `build/airremote-release.json`。
+`Build.ps1` 仍包含退役 Windows 辅助程序的配对与清单流程，不是 DSH 发布构建入口。将固件放进 DSH 插件包时，使用[维护者指南](../docs/plugin-install-and-publish.md#维护者从源码构建与打包)的独立打包与校验步骤。
 
 VS Code 中打开 `firmware` 根后可用任务：
 
@@ -93,21 +86,15 @@ VS Code 中打开 `firmware` 根后可用任务：
 | `build/partition_table/partition-table.bin` | `0x8000` |
 | `build/ota_data_initial.bin` | `0x10d000` |
 | `build/codex_air_remote.bin` | `0x200000` |
-| `build/airremote-release.json` | SHA-256 清单，Windows 烧录前校验 |
+| `build/flasher_args.json` | ESP-IDF 生成的分段布局，供插件打包工具校验 |
 
-不要手工修改或单独分发 `build/`：镜像内嵌本机 TLS 私钥和配对令牌。
+`build/` 是本机构建缓存，不作为发布包。经校验的分发产物位于[插件固件目录](../plugins/dsh-airremote/firmware/)。
 
 ## 烧录
 
-推荐用 Windows 辅助程序烧录，它会先备份 16 MB 原始 Flash，再按上表地址写入并校验，最后通过 USB 完成配网：
+推荐用 DSH **设置 → Air remote → 扫描设备 → 开始烧录**。维护者先备份 NVS；不论使用插件还是开发工具，都按上表四段写入，不能用合并镜像从 `0x0` 整片写入。电脑无需开启热点或改变联网方式。
 
-```powershell
-windows\Flash.cmd
-```
-
-也可以打开 `windows\Companion.cmd`，点「烧录开发板」。烧录工具为 esptool，参数为 `--chip esp32c6 --baud 921600 --flash-mode dio --flash-size 16MB --flash-freq 80m`。镜像地址与 `windows/host/flash.py` 中的常量一一对应，修改分区表时必须同步修改该脚本。
-
-板端没有硬件复位键。无法进入下载模式时，按住 BOOT 后重新上电或短按 RESET（如板上有），再松开 BOOT。
+板端没有硬件复位键。无法进入下载模式时，按住 BOOT 后重新上电，再松开 BOOT。
 
 ## 分区与镜像
 

@@ -1,79 +1,39 @@
-# 安装与发布（DSH 插件 + 固件一体化包）
+# 安装与发布 Air Remote
 
-本包把 **固件镜像、烧录入口、时区/自动对时、语音直连** 打成一个 DSH 插件：
-安装插件后，在 DSH 设置页即可完成「烧录固件 → 设置开发板时间」，不需要另装工具。
+Air Remote 是一个 DSH 插件，包含 ESP32-C6 固件、USB 烧录、开发板时间/时区设置和语音直连。适用于微雪 **ESP32-C6-Touch-AMOLED-2.16**；当前串口烧录路径在 Windows DSH 宿主运行，不使用浏览器 Web Serial，也不用安装旧 Windows 辅助程序。
 
-- 仓库：<https://github.com/grassoflty-dev/CodexAirRemote>（**public**）
-- 插件目录：`plugins/dsh-airremote`
-- 插件版本：`0.4.1`；内置固件：`0.6.1`（`plugins/dsh-airremote/firmware/manifest.json`）
-- 授权：插件 MIT，仓库与固件 Apache-2.0（见 `LICENSE` / `firmware/LICENSE`）
+## 当前版本
 
-## 1. 前置条件
+| 来源 | 插件 | 固件 | 状态 |
+| --- | --- | --- | --- |
+| [DSH Discover 索引](../plugin-index.json) | `0.5.5`（`d9a0d42`） | `0.7.2` | 已发布；有真机验收记录，但设定页旋转后来复现过卡死 |
+| Git `main` 中的[插件](../plugins/dsh-airremote/package.json)及[内置镜像](../plugins/dsh-airremote/firmware/manifest.json) | `0.5.7`（`1543316`） | `0.7.3`（`49e5257`） | 修复针对旋转卡死；用户在真机上报告旋转后持续上下错位，**不提升为 Discover 默认版本** |
 
-| 条件 | 说明 |
-| --- | --- |
-| DSH | `>= 0.2.0-rc.1` |
-| 插件市场（Discover） | 需启用实验性 bundle `@deepseek-ai/dsh-experimental-plugin-market-bundle`；未启用时可用「方式二」直接安装 |
-| 浏览器 | 烧录需要 Chromium 内核 + 安全上下文（`https://` 或 `localhost`），并授予串口权限 |
-| 开发板 | ESP32-C6-Touch-AMOLED-2.16（CH343/内置 USB 串口均可） |
+插件版本、Git 安装定位提交与内置固件的源码提交是三个不同的值。设置页显示包内固件版本，并不代表板上已烧入该版本；需要时用板端启动日志的 `App version` 核对。
 
-## 2. 从插件索引安装（可被其他人搜到）
+## 安装与使用
 
-1. DSH → **Plugins → Discover** → **Add index source**；
-2. 输入索引文件 URL：
+1. 在 DSH 的 **Plugins → Discover → Add index source** 添加：
+   `https://raw.githubusercontent.com/grassoflty-dev/CodexAirRemote/main/plugin-index.json`。
+   Discover 需要实验性插件市场；没有 Discover 时，可用 **Plugins → Add plugin** 安装指定版本的本地 `.tgz`。
+2. 搜索 `dsh-airremote`，安装后在 **Installed** 确认已启用。更新时若遇到 `@serialport/bindings-cpp` 的 `EPERM`，检查是否还有宿主进程占用文件；不要手改 profile 或把半安装视为成功。更新后的版本需要重新启动 DSH 才能验证。
+3. 用数据线连接开发板，打开 **设置 → Air remote**，按需点**扫描设备**。确认板型和目标版本后再烧录；时间与时区也在同一个设置页设置。
 
-   ```text
-   https://raw.githubusercontent.com/grassoflty-dev/CodexAirRemote/main/plugin-index.json
+当前包按四段写入 `0x0`（bootloader）、`0x8000`（分区表）、`0x10d000`（OTA 数据）、`0x200000`（应用）。不覆盖 `0x9000–0x10cfff` 的 NVS；合并镜像只是四段数据的容器，**不能拿来从 `0x0` 整片写入**。维护者真机烧录前必须备份 NVS。
+
+## 维护者：从源码构建与打包
+
+1. 按仓库约定同步 `origin/main`；提交待发布的固件源码。使用干净提交、ESP-IDF 5.5.5 和全新构建产物，不把诊断补丁混入发布版。
+2. 在仓库根目录执行（把 `X.Y.Z` 换成实际固件版本）：
+   ```powershell
+   . .\env\activate.ps1
+   idf -C firmware build
+   node plugins/dsh-airremote/scripts/bundle-firmware.mjs --version X.Y.Z
+   node plugins/dsh-airremote/scripts/bundle-firmware.mjs --check
    ```
+   打包工具检查四段布局和擦除边界，对比 app 内嵌的 Git 版本与源码 `HEAD`，重新生成合并镜像，不复用旧 `merged*.bin`。只核对已随包提交的镜像时用 `--check`，无需构建或连接板子。
+3. 若改了插件或换了内置镜像，更新插件自己的版本及 lockfile。在[插件目录](../plugins/dsh-airremote/)运行 `npm ci`、`npm run check`、`npm run build`、`npm test`；`npm pack --dry-run` 核对包中有 `lib`、patch、图标、语言资源、详情页、固件镜像和清单，再用 `npm pack` 生成测试包。Git 安装依赖已经提交的 `lib` 与固件文件。
+4. 用候选包真机验证扫描、分段烧录、启动版本、NVS 保留、设置页四向旋转、待机唤醒和 BLE 重连。旋转不能只看“未卡死”，还要确认切换后画面和触摸位置持续正确。
+5. 验收通过后，先确定包含完整插件包的 Git 提交，再在[索引](../plugin-index.json)头部新增版本：`source.commit` 填该**插件包提交**的 40 位 SHA（不是固件源码提交）；`source.path` 保持 `plugins/dsh-airremote`，`publishTimestamp` 为发布 Unix 秒。确认发布授权后再推送插件包、索引与对应标签。
 
-3. 搜索 **Air Remote** / `dsh-airremote` → **Install** → **Installed** 里启用；
-4. 设置页会出现 **Air Remote** 面板：烧录固件、设置开发板时间（时区）、语音设备状态。
-
-索引格式为 DSH 的 *plugin market index format 1*（`format: 1` + `plugins[]`），
-每个版本的 `source` 是 `{type: "git", url, commit, path}`；DSH 会把它拼成
-`git+https://github.com/grassoflty-dev/CodexAirRemote.git#<commit>&path:/plugins/dsh-airremote`
-交给 pnpm 安装。`firmware/manifest.json` 与索引里的版本号/commit 必须同时更新。
-
-## 3. 直接安装（不走索引）
-
-```text
-plugin_manager install_bundle  git+https://github.com/grassoflty-dev/CodexAirRemote.git#<40位commit>&path:/plugins/dsh-airremote
-```
-
-或走安全启动器端点（推荐，带兼容性金丝雀）：
-
-```text
-POST http://127.0.0.1:3080/dsh-safe-launch/install-plugin
-{"source": "git+https://github.com/grassoflty-dev/CodexAirRemote.git#<40位commit>&path:/plugins/dsh-airremote"}
-```
-
-## 4. 发布/更新流程（维护者）
-
-```powershell
-# 1) 构建固件并一键生成合并镜像 + manifest（版本号按语义化递增）
-. .\env\activate.ps1
-idf -C firmware build
-node plugins/dsh-airremote/scripts/bundle-firmware.mjs --version 0.5.0
-
-# 2) 插件版本与镜像版本同步
-cd plugins/dsh-airremote
-npm run build
-npm version patch   # 或手工改 package.json（插件版本与固件版本是两套号）
-
-# 3) 更新仓库根 plugin-index.json：
-#    - plugins[0].versions[0].version = 插件版本
-#    - source.commit = 本次提交的 40 位 commit
-#    - publishTimestamp = 当前 Unix 秒
-# 4) 提交 → push main（索引 URL 走 main，push 后即可被 Discover 读到）
-```
-
-## 5. 常见问题
-
-- **Discover 里搜不到**：确认索引 URL 可访问（`main` 分支）、DSH 版本满足、仓库是 public；
-  索引文件里 `format` 必须为 `1`，`plugins[].versions[].source.commit` 必须是 40 位小写 SHA。
-- **安装后设置页没有 Air Remote 面板**：到 Plugins → Installed 启用插件并重载 DSH；
-  客户端 bundle 需要 web profile 重载一次。
-- **烧录失败**：先确认串口未被其他程序占用（插件内 `SerialHolder` 会拒绝重复占用）；
-  烧录会清 NVS，Wi-Fi 配网与时区需要重设。
-- **固件与插件版本**：插件版本（`package.json`）与内置固件版本（`firmware/manifest.json`）独立，
-  固件更新后必须重新打包镜像并同步 `plugin-index.json`。
+详见[插件说明](../plugins/dsh-airremote/README.md)、[固件工程](../firmware/README.md)和[真机记录](开发进度.md)。
