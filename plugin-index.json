@@ -5,8 +5,70 @@
     "zh": "Codex Air Remote"
   },
   "description": {
-    "en": "Distribution paused while legacy device credentials are retired. Do not install or flash historical releases.",
-    "zh": "正在更换旧版设备凭据，暂停售发。请勿安装或烧录历史版本。"
+    "en": "ESP32-C6 board as a DSH voice-input microphone, with firmware flashing and board time (time zone) setup built in.",
+    "zh": "把 ESP32-C6 开发板变成 DSH 语音输入麦克风，并内置固件烧录与开发板时间（时区）设置。"
   },
-  "plugins": []
+  "metadata": {
+    "categories": {
+      "devtools": {
+        "title": {
+          "en": "Developer tools",
+          "zh": "开发工具"
+        }
+      },
+      "hardware": {
+        "title": {
+          "en": "Hardware",
+          "zh": "硬件"
+        }
+      }
+    }
+  },
+  "plugins": [
+    {
+      "name": "dsh-airremote",
+      "title": {
+        "en": "Air Remote (ESP32-C6)",
+        "zh": "Air Remote 语音遥控板"
+      },
+      "description": {
+        "en": "ESP32-C6 virtual microphone with USB voice pairing, firmware flashing, and board time setup.",
+        "zh": "ESP32-C6 虚拟麦克风，支持 USB 语音配对、固件烧录和开发板时间设置。"
+      },
+      "author": "grassoflty-dev",
+      "homepage": "https://github.com/grassoflty-dev/CodexAirRemote/tree/main/plugins/dsh-airremote",
+      "repository": {
+        "url": "https://github.com/grassoflty-dev/CodexAirRemote",
+        "directory": "plugins/dsh-airremote"
+      },
+      "metadata": {
+        "category": "devtools",
+        "keywords": [
+          "dsh-plugin",
+          "dsh",
+          "deepseek-harness",
+          "esp32",
+          "esp32-c6",
+          "voice-input",
+          "whisper",
+          "firmware-flashing"
+        ]
+      },
+      "versions": [
+        {
+          "version": "0.5.9",
+          "publishTimestamp": 1795260112,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/grassoflty-dev/CodexAirRemote",
+            "commit": "3062e298d418d76f95312f6e50c660a351759c02",
+            "path": "plugins/dsh-airremote"
+          },
+          "engines": {
+            "dsh": ">=0.2.0-rc.1"
+          }
+        }
+      ]
+    }
+  ]
 }
