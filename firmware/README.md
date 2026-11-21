@@ -59,7 +59,7 @@
 
 ## 构建
 
-先按仓库约定同步 `origin/main`，然后激活 ESP-IDF **5.5.5**。当前 C6 工程不依赖旧 Windows 辅助程序或其 `.local` 配对文件。
+先按仓库约定同步 `origin/main`，然后激活 ESP-IDF **5.5.5**。运行固件不需要旧 Windows 辅助程序，但当前语音组件仍从 `windows/.local` 读取并编入本机 TLS 证书、私钥和配对令牌。**这种构建产物只能在本机使用，不得提交或发布。**
 
 ```powershell
 # 仓库根目录
