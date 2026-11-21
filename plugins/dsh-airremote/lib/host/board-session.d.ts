@@ -4,7 +4,7 @@
  * firmware's `send_audio` drains its ring only when it receives `PULL`.
  */
 import { BoardDiscovery } from './discovery.js';
-import type { AirRemoteHostConfig } from './config.js';
+import { type AirRemoteHostConfig } from './config.js';
 export type BoardState = 'discovering' | 'connecting' | 'authenticating' | 'arming' | 'live' | 'finishing' | 'ended' | 'error';
 export type BoardEndReason = 'draft' | 'cancelled' | 'error' | 'timeout' | 'closed';
 export interface BoardSessionEvents {
@@ -54,7 +54,6 @@ export declare class BoardSession {
     private setState;
     start(): Promise<void>;
     private resolveTarget;
-    private loadCa;
     private timeout;
     private clearTimers;
     private onMessage;

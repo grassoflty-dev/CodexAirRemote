@@ -11,6 +11,8 @@
 #include "driver/usb_serial_jtag_vfs.h"
 #include "esp_check.h"
 #include "esp_mac.h"
+#include "esp_system.h"
+#include "identity.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "nvs.h"
@@ -164,6 +166,50 @@ static void standby_button(const char *name)
 }
 #endif
 
+/* 配对只走物理 USB。响应中的令牌不是日志，私钥从不离开板子。 */
+static void voice_identity_usb(const char *command)
+{
+    if (strcmp(command, "ROTATE") == 0) {
+        if (board_identity_erase() != ESP_OK) {
+            puts("AR1P ERR");
+            return;
+        }
+        puts("AR1P RESTART");
+        fflush(stdout);
+        (void)usb_serial_jtag_wait_tx_done(pdMS_TO_TICKS(300));
+        esp_restart();
+        return;
+    }
+    if (strncmp(command, "GET ", 4) != 0 || strlen(command + 4) != 32) {
+        puts("AR1P ERR");
+        return;
+    }
+    const char *nonce = command + 4;
+    for (size_t i = 0; i < 32; ++i) {
+        if (hex_digit(nonce[i]) < 0) {
+            puts("AR1P ERR");
+            return;
+        }
+    }
+    board_identity_t *identity = calloc(1, sizeof(*identity));
+    char *encoded = malloc(2 * BOARD_CERT_MAX + 1);
+    if (identity && encoded && board_identity_read(identity) == ESP_OK) {
+        static const char hex[] = "0123456789abcdef";
+        for (size_t i = 0; i < identity->cert_len; ++i) {
+            encoded[2 * i] = hex[identity->cert[i] >> 4];
+            encoded[2 * i + 1] = hex[identity->cert[i] & 15];
+        }
+        encoded[2 * identity->cert_len] = '\0';
+        printf("AR1P OK %s %.*s %s\n", nonce, BOARD_TOKEN_LEN, identity->token, encoded);
+        fflush(stdout);
+    } else {
+        puts("AR1P ERR");
+    }
+    if (identity) board_identity_clear(identity);
+    free(encoded);
+    free(identity);
+}
+
 static void serial_task(void *unused)
 {
     char line[220];
@@ -186,6 +232,9 @@ static void serial_task(void *unused)
                 if (!overflow && strncmp(line, "AR1W ", 5) == 0) set_wifi(line + 5);
                 if (!overflow && strncmp(line, "AR1T ", 5) == 0) set_time(line + 5);
                 if (!overflow && strncmp(line, "AR1Z ", 5) == 0) set_timezone(line + 5);
+                if (!overflow && atomic_load(&board_initialized) && strncmp(line, "AR1P ", 5) == 0) {
+                    voice_identity_usb(line + 5);
+                }
 #if APP_UI_STANDBY_TEST_HOOK
                 if (!overflow && strcmp(line, "AR1S") == 0) standby_status();
                 if (!overflow && strcmp(line, "AR1S TAP") == 0) standby_tap();

@@ -4,11 +4,11 @@
  * firmware's `send_audio` drains its ring only when it receives `PULL`.
  */
 
-import { existsSync, readFileSync } from 'node:fs'
+import { BOARD_TLS_NAME, readBoardPairing } from './board-pairing.js'
 import { BoardDiscovery } from './discovery.js'
 import { authMessage, parseAudioFrame, ABORT, ACK, CANCEL, CAPTURE, CANCELLED, DRAFTED, GO, PULL, READY2, SEND, WAIT } from './protocol.js'
 import { connectWebSocket, type WsConnection } from './ws.js'
-import type { AirRemoteHostConfig } from './config.js'
+import { simulatedToken, type AirRemoteHostConfig } from './config.js'
 
 export type BoardState =
   | 'discovering'
@@ -97,20 +97,19 @@ export class BoardSession {
 
   async start(): Promise<void> {
     try {
+      const pairing = this.simulation === undefined ? readBoardPairing(this.config.dataDir) : undefined
+      if (this.simulation === undefined && !pairing) {
+        throw new Error('请用 USB 连接已更新的开发板，在 Air remote 设置里配对语音凭据。')
+      }
+      const token = pairing?.token ?? simulatedToken(this.config)
+      if (!/^[a-f0-9]{64}$/i.test(token)) throw new Error('airremote: simulation token missing')
       const target = await this.resolveTarget()
       this.setState('connecting', `连接 ${target.host}:${String(target.port)}…`)
-      const token = this.config.pairingToken
-      if (token.length !== 64) {
-        throw new Error('airremote: pairing token missing; put the firmware token in ~/.dsh/airremote/pairing.txt')
-      }
-      const ca = this.loadCa()
-      const tls = this.simulation === undefined && !this.config.simulate
-        ? {
-            ca,
-            servername: ca === undefined ? undefined : 'airremote.local',
-            rejectUnauthorized: ca !== undefined
-          }
-        : undefined
+      const tls = pairing ? {
+        ca: pairing.certificate,
+        fingerprint256: pairing.fingerprint,
+        servername: BOARD_TLS_NAME
+      } : undefined
       const ws = await connectWebSocket(
         {
           host: target.host,
@@ -141,18 +140,6 @@ export class BoardSession {
     this.setState('discovering', '等待开发板（请在板子上点 Voice）…')
     const board = await this.discovery.wait(this.config.discoveryTimeoutMs)
     return { host: board.host, port: this.config.boardPort }
-  }
-
-  private loadCa(): string | undefined {
-    try {
-      if (existsSync(this.config.caFile)) {
-        const text = readFileSync(this.config.caFile, 'utf8').trim()
-        if (text.includes('BEGIN CERTIFICATE')) return text
-      }
-    } catch {
-      /* fall back to an unverified connection */
-    }
-    return undefined
   }
 
   private timeout(ms: number, callback: () => void): NodeJS.Timeout {

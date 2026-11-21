@@ -1,15 +1,15 @@
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
-import { createReadStream, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { createHash, randomBytes } from "node:crypto";
+import { X509Certificate, createHash, randomBytes } from "node:crypto";
+import { createReadStream, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { connect } from "node:net";
 import { connect as connect$1 } from "node:tls";
+import { homedir } from "node:os";
 import { execFile } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
-import { dirname, join } from "node:path";
 import { createSocket } from "node:dgram";
 import { createServer } from "node:http";
-import { homedir } from "node:os";
 import { readFile, stat } from "node:fs/promises";
 // src/host/origin.ts
 const LOOPBACK_HOSTNAMES = /* @__PURE__ */ new Set([
@@ -60,6 +60,56 @@ function isSameOriginRequest(req, warn) {
 	if (target !== void 0 && isLoopbackHostname(parsed.hostname) && isLoopbackHostname(target.hostname) && originPort === target.port) return true;
 	warn?.(`airremote: rejected foreign Origin ${origin} (Host ${host ?? "?"})`);
 	return false;
+}
+// src/host/board-pairing.ts
+const PAIRING_FILE = "device-pairing.json";
+const BOARD_TLS_NAME = "airremote.local";
+/** 只接受板子经 USB 提供的、有效且自签名的设备证书。 */
+function validateBoardPairing(token, certificate) {
+	if (typeof token !== "string" || !/^[a-f0-9]{64}$/.test(token) || /^0+$/.test(token)) throw new Error("invalid device pairing token");
+	const x509 = new X509Certificate(certificate);
+	const now = Date.now();
+	if (x509.raw.length > 512 || !x509.ca || x509.subject !== x509.issuer || !x509.checkHost("airremote.local", { subject: "never" }) || !x509.verify(x509.publicKey) || x509.publicKey.asymmetricKeyType !== "ec" || x509.publicKey.asymmetricKeyDetails?.namedCurve !== "prime256v1" || !(Date.parse(x509.validFrom) <= now && now <= Date.parse(x509.validTo))) throw new Error("invalid device certificate");
+	return {
+		token,
+		certificate: x509.toString(),
+		fingerprint: x509.fingerprint256
+	};
+}
+function readBoardPairing(dataDir) {
+	try {
+		const stored = JSON.parse(readFileSync(join(dataDir, PAIRING_FILE), "utf8"));
+		if (typeof stored.certificate === "string") return validateBoardPairing(stored.token, stored.certificate);
+	} catch {}
+}
+function writeBoardPairing(dataDir, pairing) {
+	const verified = validateBoardPairing(pairing.token, pairing.certificate);
+	mkdirSync(dataDir, {
+		recursive: true,
+		mode: 448
+	});
+	const target = join(dataDir, PAIRING_FILE);
+	const pending = join(dataDir, `.device-pairing-${randomBytes(8).toString("hex")}.tmp`);
+	try {
+		writeFileSync(pending, JSON.stringify({
+			token: verified.token,
+			certificate: verified.certificate
+		}) + "\n", {
+			encoding: "utf8",
+			flag: "wx",
+			mode: 384
+		});
+		renameSync(pending, target);
+	} finally {
+		rmSync(pending, { force: true });
+	}
+}
+/** 不把包含令牌的整行放进异常、HTTP 结果或日志。 */
+function parsePairingReply(line, nonce) {
+	if (!line.startsWith(`AR1P OK ${nonce} `)) return void 0;
+	const match = /^AR1P OK [a-f0-9]{32} ([a-f0-9]{64}) ([a-f0-9]{2,1024})$/.exec(line);
+	if (!match || match[2].length % 2 !== 0) throw new Error("invalid USB pairing reply");
+	return validateBoardPairing(match[1], Buffer.from(match[2], "hex"));
 }
 function parseAudioFrame(payload) {
 	if (payload.length <= 4) return void 0;
@@ -412,14 +462,22 @@ function connectWebSocket(options, handlers) {
 			});
 			socket.once("connect", sendUpgrade);
 		} else {
-			socket = connect$1({
+			const tls = options.tls;
+			const secure = connect$1({
 				host: options.host,
 				port: options.port,
-				servername: options.tls.servername,
-				ca: options.tls.ca,
-				rejectUnauthorized: options.tls.rejectUnauthorized ?? false
+				servername: tls.servername,
+				ca: tls.ca,
+				rejectUnauthorized: true
 			});
-			socket.once("secureConnect", sendUpgrade);
+			socket = secure;
+			secure.once("secureConnect", () => {
+				if (tls.fingerprint256 && secure.getPeerCertificate().fingerprint256 !== tls.fingerprint256) {
+					fail(/* @__PURE__ */ new Error("board certificate changed; pair again over USB"));
+					return;
+				}
+				sendUpgrade();
+			});
 		}
 		socket.on("error", (error) => fail(error));
 		socket.on("close", () => {
@@ -466,6 +524,56 @@ function connectWebSocket(options, handlers) {
 			});
 		}
 	});
+}
+// src/host/config.ts
+/**
+* Host-side runtime configuration.
+*
+* Values come from (highest priority first) the plugin entry config in
+* `cordis.patch.yml`, environment variables, and files under the DSH home:
+*
+*   ~/.dsh/airremote/device-pairing.json - device certificate and token imported by USB
+*   Legacy pairing.txt / caFile settings are not trusted for real boards.
+*   ~/.dsh/airremote/sim.wav      - speech used by the simulated board
+*   ~/.dsh/airremote/time.json    - 设置页选的时区（`auto` 表示跟随系统）
+*
+* The pairing token is a secret: it is read from disk or the environment, never
+* from the committed profile patch.
+*/
+function env(name) {
+	const value = process.env[name];
+	return value === void 0 || value.trim() === "" ? void 0 : value.trim();
+}
+function readToken(file) {
+	try {
+		return existsSync(file) ? readFileSync(file, "utf8").trim() : "";
+	} catch {
+		return "";
+	}
+}
+function resolveHostConfig(overrides = {}) {
+	const dshHome = env("DSH_HOME") ?? join(homedir(), ".dsh");
+	const dataDir = overrides.dataDir ?? env("AIRREMOTE_DATA_DIR") ?? join(dshHome, "airremote");
+	const tokenFile = overrides.pairingTokenFile ?? env("AIRREMOTE_PAIRING_FILE") ?? join(dataDir, "pairing.txt");
+	const pairingToken = overrides.pairingToken ?? env("AIRREMOTE_PAIRING_TOKEN") ?? readToken(tokenFile);
+	const simulate = overrides.simulate ?? (env("AIRREMOTE_SIMULATE") === "1" || existsSync(join(dataDir, "simulate")));
+	return {
+		dataDir,
+		pairingToken,
+		caFile: overrides.caFile ?? env("AIRREMOTE_CA_FILE") ?? join(dataDir, "server.crt"),
+		boardHost: overrides.boardHost ?? env("AIRREMOTE_BOARD_HOST") ?? "",
+		boardPort: overrides.boardPort ?? Number(env("AIRREMOTE_BOARD_PORT") ?? "47683"),
+		discoveryPort: overrides.discoveryPort ?? Number(env("AIRREMOTE_DISCOVERY_PORT") ?? "47682"),
+		discoveryTimeoutMs: overrides.discoveryTimeoutMs ?? Number(env("AIRREMOTE_DISCOVERY_TIMEOUT_MS") ?? "30000"),
+		simulate,
+		simWav: overrides.simWav ?? env("AIRREMOTE_SIM_WAV") ?? join(dataDir, "sim.wav"),
+		simPort: overrides.simPort ?? Number(env("AIRREMOTE_SIM_PORT") ?? "47684"),
+		serialPort: overrides.serialPort ?? env("AIRREMOTE_SERIAL_PORT") ?? ""
+	};
+}
+/** The simulated board needs a syntactically valid token; the value is never compared to the firmware. */
+function simulatedToken(config) {
+	return config.pairingToken.length === 64 ? config.pairingToken : "0".repeat(64);
 }
 // src/host/board-session.ts
 /**
@@ -526,15 +634,16 @@ var BoardSession = class {
 	}
 	async start() {
 		try {
+			const pairing = this.simulation === void 0 ? readBoardPairing(this.config.dataDir) : void 0;
+			if (this.simulation === void 0 && !pairing) throw new Error("请用 USB 连接已更新的开发板，在 Air remote 设置里配对语音凭据。");
+			const token = pairing?.token ?? simulatedToken(this.config);
+			if (!/^[a-f0-9]{64}$/i.test(token)) throw new Error("airremote: simulation token missing");
 			const target = await this.resolveTarget();
 			this.setState("connecting", `连接 ${target.host}:${String(target.port)}…`);
-			const token = this.config.pairingToken;
-			if (token.length !== 64) throw new Error("airremote: pairing token missing; put the firmware token in ~/.dsh/airremote/pairing.txt");
-			const ca = this.loadCa();
-			const tls = this.simulation === void 0 && !this.config.simulate ? {
-				ca,
-				servername: ca === void 0 ? void 0 : "airremote.local",
-				rejectUnauthorized: ca !== void 0
+			const tls = pairing ? {
+				ca: pairing.certificate,
+				fingerprint256: pairing.fingerprint,
+				servername: BOARD_TLS_NAME
 			} : void 0;
 			const ws = await connectWebSocket({
 				host: target.host,
@@ -567,14 +676,6 @@ var BoardSession = class {
 			host: (await this.discovery.wait(this.config.discoveryTimeoutMs)).host,
 			port: this.config.boardPort
 		};
-	}
-	loadCa() {
-		try {
-			if (existsSync(this.config.caFile)) {
-				const text = readFileSync(this.config.caFile, "utf8").trim();
-				if (text.includes("BEGIN CERTIFICATE")) return text;
-			}
-		} catch {}
 	}
 	timeout(ms, callback) {
 		const timer = setTimeout(callback, ms);
@@ -1160,6 +1261,68 @@ async function syncBoardTime(port, unixSeconds, minutes) {
 	if (module !== void 0) return syncWithSerialport(module, target, unixSeconds, minutes);
 	return syncWithPowerShell(target, unixSeconds, minutes);
 }
+/** 只配对唯一的原生 ESP32-C6 USB 端口，不走会留命令输出的 PowerShell。 */
+async function pairBoardUsb(rotate) {
+	const module = await loadSerialport$1();
+	if (!module) throw new Error("USB pairing requires the native serial driver");
+	const matches = (await module.SerialPort.list()).filter((entry) => entry.vendorId?.toLowerCase() === "303a" && entry.productId?.toLowerCase() === "1001" && entry.path);
+	if (matches.length !== 1) throw new Error("Connect exactly one ESP32-C6 board by USB");
+	const nonce = randomBytes(16).toString("hex");
+	const port = new module.SerialPort({
+		path: matches[0].path,
+		baudRate: BOARD_BAUD_RATE,
+		autoOpen: false
+	});
+	let timer;
+	try {
+		await new Promise((resolve, reject) => port.open((err) => err ? reject(err) : resolve()));
+		return await new Promise((resolve, reject) => {
+			let buffer = "";
+			let discard = false;
+			let settled = false;
+			const fail = (message) => {
+				if (!settled) {
+					settled = true;
+					reject(new Error(message));
+				}
+			};
+			timer = setTimeout(() => fail("Firmware did not answer USB pairing; update firmware and try again"), 8e3);
+			port.on("error", () => fail("USB pairing serial error"));
+			port.on("close", () => fail("USB serial port closed during pairing"));
+			port.on("data", (bytes) => {
+				if (settled) return;
+				for (const value of bytes) if (value === 10 || value === 13) {
+					const line = discard ? "" : buffer;
+					buffer = "";
+					discard = false;
+					try {
+						if (line === "AR1P ERR") return fail("Board rejected USB pairing");
+						if (rotate && line === "AR1P RESTART") {
+							settled = true;
+							return resolve(void 0);
+						}
+						if (!rotate) {
+							const pairing = parsePairingReply(line, nonce);
+							if (pairing) {
+								settled = true;
+								return resolve(pairing);
+							}
+						}
+					} catch {
+						return fail("Board returned an invalid pairing identity");
+					}
+				} else if (buffer.length < 1152 && !discard) buffer += String.fromCharCode(value);
+				else discard = true;
+			});
+			port.write(`\nAR1P ${rotate ? "ROTATE" : `GET ${nonce}`}\n`, (error) => {
+				if (error) fail("USB pairing command write failed");
+			});
+		});
+	} finally {
+		if (timer !== void 0) clearTimeout(timer);
+		await closeSerialPort(port);
+	}
+}
 async function syncWithSerialport(module, path, unixSeconds, minutes) {
 	const deadline = Date.now() + SYNC_TIMEOUT_MS;
 	const sent = [];
@@ -1170,6 +1333,7 @@ async function syncWithSerialport(module, path, unixSeconds, minutes) {
 	/** 只有真正 new 出来的端口才需要关；构造就抛错时保持 undefined。 */
 	let port;
 	const take = (line) => {
+		if (line.includes("AR1P OK ")) return;
 		lines.push(line);
 		const waiter = pending;
 		if (waiter === void 0) return;
@@ -1413,7 +1577,7 @@ async function syncWithPowerShell(path, unixSeconds, minutes) {
 		const tag = rest.slice(0, close);
 		const text = rest.slice(close + 2);
 		if (tag === "SENT") sent.push(text);
-		else if (tag === "LINE") lines.push(text);
+		else if (tag === "LINE" && !text.includes("AR1P OK ")) lines.push(text);
 		else if (tag === "ERROR") {
 			if (text.startsWith("open-failed:")) openFailure = text.slice(12);
 			else writeFailure = text;
@@ -1986,56 +2150,6 @@ var FakeBoard = class {
 		} catch {}
 	}
 };
-// src/host/config.ts
-/**
-* Host-side runtime configuration.
-*
-* Values come from (highest priority first) the plugin entry config in
-* `cordis.patch.yml`, environment variables, and files under the DSH home:
-*
-*   ~/.dsh/airremote/pairing.txt  - the 64-character token embedded in the firmware
-*   ~/.dsh/airremote/server.crt   - the board's self-signed certificate (optional pin)
-*   ~/.dsh/airremote/sim.wav      - speech used by the simulated board
-*   ~/.dsh/airremote/time.json    - 设置页选的时区（`auto` 表示跟随系统）
-*
-* The pairing token is a secret: it is read from disk or the environment, never
-* from the committed profile patch.
-*/
-function env(name) {
-	const value = process.env[name];
-	return value === void 0 || value.trim() === "" ? void 0 : value.trim();
-}
-function readToken(file) {
-	try {
-		return existsSync(file) ? readFileSync(file, "utf8").trim() : "";
-	} catch {
-		return "";
-	}
-}
-function resolveHostConfig(overrides = {}) {
-	const dshHome = env("DSH_HOME") ?? join(homedir(), ".dsh");
-	const dataDir = overrides.dataDir ?? env("AIRREMOTE_DATA_DIR") ?? join(dshHome, "airremote");
-	const tokenFile = overrides.pairingTokenFile ?? env("AIRREMOTE_PAIRING_FILE") ?? join(dataDir, "pairing.txt");
-	const pairingToken = overrides.pairingToken ?? env("AIRREMOTE_PAIRING_TOKEN") ?? readToken(tokenFile);
-	const simulate = overrides.simulate ?? (env("AIRREMOTE_SIMULATE") === "1" || existsSync(join(dataDir, "simulate")));
-	return {
-		dataDir,
-		pairingToken,
-		caFile: overrides.caFile ?? env("AIRREMOTE_CA_FILE") ?? join(dataDir, "server.crt"),
-		boardHost: overrides.boardHost ?? env("AIRREMOTE_BOARD_HOST") ?? "",
-		boardPort: overrides.boardPort ?? Number(env("AIRREMOTE_BOARD_PORT") ?? "47683"),
-		discoveryPort: overrides.discoveryPort ?? Number(env("AIRREMOTE_DISCOVERY_PORT") ?? "47682"),
-		discoveryTimeoutMs: overrides.discoveryTimeoutMs ?? Number(env("AIRREMOTE_DISCOVERY_TIMEOUT_MS") ?? "30000"),
-		simulate,
-		simWav: overrides.simWav ?? env("AIRREMOTE_SIM_WAV") ?? join(dataDir, "sim.wav"),
-		simPort: overrides.simPort ?? Number(env("AIRREMOTE_SIM_PORT") ?? "47684"),
-		serialPort: overrides.serialPort ?? env("AIRREMOTE_SERIAL_PORT") ?? ""
-	};
-}
-/** The simulated board needs a syntactically valid token; the value is never compared to the firmware. */
-function simulatedToken(config) {
-	return config.pairingToken.length === 64 ? config.pairingToken : "0".repeat(64);
-}
 // src/host/firmware-routes.ts
 /**
 * 「内置固件」的 HTTP 路由（contract: `/airremote/firmware/manifest`、`/airremote/firmware/image`）。
@@ -3136,6 +3250,56 @@ var PortsRoute = class {
 		res.end(payload);
 	}
 };
+// src/host/pairing-route.ts
+/** USB identity operations are local-only and never return credentials to the browser. */
+function pairingHandler(dataDir, holder, rotate = false) {
+	return async (req, res) => {
+		const reply = (status, body) => {
+			res.writeHead(status, {
+				"Content-Type": "application/json; charset=utf-8",
+				"Cache-Control": "no-store"
+			});
+			res.end(JSON.stringify(body));
+		};
+		if (req.method !== "POST") return reply(405, {
+			ok: false,
+			code: "method"
+		});
+		let host = "";
+		try {
+			host = new URL(`http://${req.headers.host ?? ""}`).hostname;
+		} catch {}
+		const remote = (req.socket.remoteAddress ?? "").replace(/^::ffff:/i, "");
+		if (!isLoopbackHostname(host) || !isLoopbackHostname(remote) || !isSameOriginRequest(req) || req.headers["x-airremote-pairing"] !== "1") return reply(403, {
+			ok: false,
+			code: "local-only"
+		});
+		if (holder.state().holder !== "none" || !holder.acquire("sync")) return reply(409, {
+			ok: false,
+			code: "busy"
+		});
+		try {
+			const pairing = await pairBoardUsb(rotate);
+			if (rotate) return reply(200, {
+				ok: true,
+				restart: true
+			});
+			if (!pairing) throw new Error("No device pairing identity");
+			writeBoardPairing(dataDir, pairing);
+			return reply(200, {
+				ok: true,
+				fingerprint: pairing.fingerprint
+			});
+		} catch {
+			return reply(400, {
+				ok: false,
+				code: "pairing-failed"
+			});
+		} finally {
+			holder.release("sync");
+		}
+	};
+}
 /** 请求体上限，和 `time-routes.ts` 保持一致。 */
 const MAX_BODY_BYTES$1 = 4096;
 var SerialHolder = class {
@@ -3820,6 +3984,14 @@ async function apply(ctx, config = {}) {
 		{
 			path: "/airremote/ports",
 			handler: portsRoute.handler
+		},
+		{
+			path: "/airremote/pair-usb",
+			handler: pairingHandler(resolved.dataDir, serialHolder)
+		},
+		{
+			path: "/airremote/rotate-usb",
+			handler: pairingHandler(resolved.dataDir, serialHolder, true)
 		},
 		{
 			path: "/airremote/serial-state",

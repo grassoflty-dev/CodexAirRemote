@@ -8,6 +8,7 @@
  *
  * 只做一次性动作：不轮询、不监听插拔、不留后台定时器。
  */
+import { type BoardPairing } from './board-pairing.js';
 /** Espressif 的 USB VID。固件用 USB-Serial/JTAG，端口一定挂在它下面。 */
 export declare const ESPRESSIF_VENDOR_ID = "303A";
 /** 与 `voice.c` 的串口命令一致：115200 8N1，无流控。 */
@@ -91,4 +92,6 @@ export declare function listBoardPorts(options?: {
  * 端口在 finally 里关闭，不留在后台。
  */
 export declare function syncBoardTime(port: string, unixSeconds: number, minutes: number): Promise<BoardSyncResult>;
+/** 只配对唯一的原生 ESP32-C6 USB 端口，不走会留命令输出的 PowerShell。 */
+export declare function pairBoardUsb(rotate: boolean): Promise<BoardPairing | undefined>;
 export {};

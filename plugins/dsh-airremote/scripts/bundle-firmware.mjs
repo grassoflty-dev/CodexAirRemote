@@ -64,6 +64,20 @@ function verifyApp(image, commit) {
   return builtVersion
 }
 
+function verifyNoEmbeddedIdentity(image) {
+  requireThat(image.includes('new device identity created; pair by USB'),
+    '没有逐板生成凭据的固件标记，拒绝分发旧版镜像')
+  // mbedTLS 自身含 PEM 标签常量，只有连同 PEM 数据的私钥才算命中。
+  requireThat(!/-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----\r?\n[A-Za-z0-9+/=\r\n]{32,}/.test(image.toString('latin1')),
+    '镜像包含 PEM 私钥，拒绝分发')
+  for (const name of ['server.crt', 'server.key', 'pairing.txt']) {
+    const file = join(repoRoot, 'windows', '.local', name)
+    if (!existsSync(file)) continue
+    const legacy = readFileSync(file, 'utf8').trim()
+    requireThat(legacy.length < 32 || !image.includes(legacy), '镜像包含本机旧凭据，拒绝分发')
+  }
+}
+
 function verifyBundle(manifest, image) {
   requireThat(manifest.plugin === plugin && manifest.chip === chip && manifest.flashOffset === 0, '固件清单目标不匹配')
   firmwareVersion(manifest.version)
@@ -72,6 +86,9 @@ function verifyBundle(manifest, image) {
   requireThat(/^[a-f0-9]{7,40}$/.test(manifest.commit), '清单缺少有效源码提交')
   const commit = git('rev-parse', '--verify', `${manifest.commit}^{commit}`)
   const app = manifest.regions.at(-1)
+  verifyNoEmbeddedIdentity(image)
+  requireThat(image.subarray(0x9000, 0x10d000).every((byte) => byte === 0xff),
+    '镜像的数据空洞含 NVS 内容，拒绝分发')
   return verifyApp(image.subarray(app.offset, app.offset + app.size), commit)
 }
 

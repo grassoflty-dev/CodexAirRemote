@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { DevBoardTime } from './DevBoardTime.js'
 import { FirmwareFlash } from './FirmwareFlash.js'
+import { VoicePairing } from './VoicePairing.js'
 import type { FlashSocket } from './flash-socket.js'
 
 /**
@@ -23,6 +24,7 @@ export function AirRemoteSettings({
     <section style={{ display: 'flex', flexDirection: 'column', gap: '20px', padding: '4px 2px' }}>
       <DevBoardTime port={board} />
       <div aria-hidden="true" style={{ height: '1px', background: 'rgba(128, 128, 128, 0.25)' }} />
+      <VoicePairing />
       <FirmwareFlash
         onBoardChange={setBoard}
         openSocket={openSocket}

@@ -1,4 +1,4 @@
-﻿#include <stdio.h>
+#include <stdio.h>
 #include <string.h>
 #include "air_mouse.h"
 #include "app_ui.h"
@@ -9,6 +9,7 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "identity.h"
 #include "nvs_flash.h"
 #include "provision.h"
 #include "rtc_board.h"
@@ -31,13 +32,11 @@ void app_main(void)
     ESP_LOGI(TAG, "Flash %lu bytes; internal heap %u bytes free",
              (unsigned long)flash_size, (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
     log_heap("boot");
-    /* Extra verbose logs while debugging the WebSocket voice path. */
-    esp_log_level_set("httpd_ws", ESP_LOG_DEBUG);
-    esp_log_level_set("httpd_parse", ESP_LOG_DEBUG);
-    esp_log_level_set("httpd_uri", ESP_LOG_DEBUG);
-
     esp_err_t nvs_status = nvs_flash_init();
+    esp_err_t identity_status = nvs_status;
     if (nvs_status == ESP_OK) {
+        identity_status = board_identity_init();
+        if (identity_status != ESP_OK) ESP_LOGE(TAG, "voice identity unavailable: %s", esp_err_to_name(identity_status));
         esp_err_t usb = provision_start();
         if (usb != ESP_OK) ESP_LOGE(TAG, "USB setup unavailable: %s", esp_err_to_name(usb));
     } else {
@@ -48,7 +47,7 @@ void app_main(void)
     /* Allocate the long-lived voice PCM buffer from a fresh, unfragmented heap
      * before BLE and LVGL carve it up. The Wi-Fi stack itself is only brought
      * up during a voice session (see voice.c). */
-    if (nvs_status == ESP_OK) {
+    if (identity_status == ESP_OK) {
         voice_ready = voice_init() == ESP_OK;
     }
     log_heap("voice-buffer");

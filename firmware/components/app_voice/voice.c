@@ -18,6 +18,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/stream_buffer.h"
 #include "freertos/task.h"
+#include "identity.h"
 #include "lwip/sockets.h"
 #include "mbedtls/constant_time.h"
 #include "provision.h"
@@ -29,11 +30,7 @@ enum {
     DISCOVERY_PORT = 47682, VOICE_PORT = 47683, MAX_RECORD_SECONDS = 60
 };
 
-extern const uint8_t server_crt_start[] asm("_binary_server_crt_start");
-extern const uint8_t server_crt_end[] asm("_binary_server_crt_end");
-extern const uint8_t server_key_start[] asm("_binary_server_key_start");
-extern const uint8_t server_key_end[] asm("_binary_server_key_end");
-extern const uint8_t pairing_txt_start[] asm("_binary_pairing_txt_start");
+
 
 static esp_codec_dev_handle_t microphone;
 static StreamBufferHandle_t audio;
@@ -160,7 +157,8 @@ static esp_err_t voice_ws(httpd_req_t *request)
     if (!request->sess_ctx || atomic_load(&client_fd) != fd) {
         if (current != VOICE_CONNECTING || atomic_load(&client_fd) >= 0 ||
             message.len != 69 || memcmp(data, "AUTH ", 5) ||
-            mbedtls_ct_memcmp(data + 5, pairing_txt_start, 64)) {
+            !request->user_ctx ||
+            mbedtls_ct_memcmp(data + 5, ((const board_identity_t *)request->user_ctx)->token, BOARD_TOKEN_LEN)) {
             ESP_LOGW(TAG, "ws rejected (state=%d len=%u)", (int)current,
                      (unsigned)message.len);
             return ESP_FAIL;
@@ -362,15 +360,26 @@ static voice_state_t serve_voice(void)
     config.httpd.lru_purge_enable = true;
     config.httpd.recv_wait_timeout = 4;
     config.httpd.send_wait_timeout = 4;
-    config.servercert = server_crt_start;
-    config.servercert_len = server_crt_end - server_crt_start;
-    config.prvtkey_pem = server_key_start;
-    config.prvtkey_len = server_key_end - server_key_start;
+    board_identity_t *identity = calloc(1, sizeof(*identity));
+    if (!identity) return VOICE_NETWORK_ERROR;
+    if (board_identity_read(identity) != ESP_OK) {
+        free(identity);
+        return VOICE_NETWORK_ERROR;
+    }
+    config.servercert = identity->cert;
+    config.servercert_len = identity->cert_len;
+    config.prvtkey_pem = identity->key;
+    config.prvtkey_len = identity->key_len;
 
     httpd_handle_t server = NULL;
-    if (httpd_ssl_start(&server, &config) != ESP_OK) return VOICE_NETWORK_ERROR;
+    if (httpd_ssl_start(&server, &config) != ESP_OK) {
+        board_identity_clear(identity);
+        free(identity);
+        return VOICE_NETWORK_ERROR;
+    }
     ESP_LOGI(TAG, "TLS server up, heap free %u", (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
-    const httpd_uri_t ws = {.uri = "/voice", .method = HTTP_GET, .handler = voice_ws, .is_websocket = true};
+    const httpd_uri_t ws = {.uri = "/voice", .method = HTTP_GET, .handler = voice_ws,
+                          .user_ctx = identity, .is_websocket = true};
     int discover = discovery_socket();
     voice_state_t result = VOICE_NETWORK_ERROR;
     if (discover >= 0 && httpd_register_uri_handler(server, &ws) == ESP_OK) {
@@ -439,6 +448,8 @@ static voice_state_t serve_voice(void)
     if (discover >= 0) close(discover);
     ESP_LOGI(TAG, "serve_voice result=%d", (int)result);
     httpd_ssl_stop(server);
+    board_identity_clear(identity);
+    free(identity);
     return result;
 }
 

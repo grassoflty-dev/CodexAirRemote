@@ -2,6 +2,8 @@
 export { AudioRoute } from './audio-route.js';
 export { AutoTimeSync } from './auto-sync.js';
 export { BoardSession } from './board-session.js';
+export { parsePairingReply, readBoardPairing, writeBoardPairing, validateBoardPairing } from './board-pairing.js';
+export { pairingHandler } from './pairing-route.js';
 export { BoardDiscovery } from './discovery.js';
 export { FakeBoard } from './fake-board.js';
 export { acceptWebSocket, connectWebSocket } from './ws.js';

@@ -39,8 +39,8 @@ export interface BoardTlsOptions {
     ca?: string | Buffer;
     /** Hostname to validate; the board certificate is issued for `airremote.local`. */
     servername?: string;
-    /** Accept the board's self-signed certificate without a CA (development only). */
-    rejectUnauthorized?: boolean;
+    /** SHA-256 fingerprint imported over USB, checked before any HTTP or AUTH data is sent. */
+    fingerprint256?: string;
 }
 export interface ConnectWebSocketOptions {
     host: string;

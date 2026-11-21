@@ -10,8 +10,10 @@
  */
 
 import { execFile } from 'node:child_process'
+import { randomBytes } from 'node:crypto'
 import { createRequire } from 'node:module'
 import { StringDecoder } from 'node:string_decoder'
+import { parsePairingReply, type BoardPairing } from './board-pairing.js'
 
 const require = createRequire(import.meta.url)
 
@@ -344,6 +346,58 @@ export async function syncBoardTime(port: string, unixSeconds: number, minutes: 
   return syncWithPowerShell(target, unixSeconds, minutes)
 }
 
+/** 只配对唯一的原生 ESP32-C6 USB 端口，不走会留命令输出的 PowerShell。 */
+export async function pairBoardUsb(rotate: boolean): Promise<BoardPairing | undefined> {
+  const module = await loadSerialport()
+  if (!module) throw new Error('USB pairing requires the native serial driver')
+  const matches = (await module.SerialPort.list()).filter((entry) =>
+    entry.vendorId?.toLowerCase() === '303a' &&
+    (entry as BoardPortInfo).productId?.toLowerCase() === '1001' && entry.path)
+  if (matches.length !== 1) throw new Error('Connect exactly one ESP32-C6 board by USB')
+  const nonce = randomBytes(16).toString('hex')
+  const port = new module.SerialPort({ path: matches[0].path, baudRate: BOARD_BAUD_RATE, autoOpen: false })
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    await new Promise<void>((resolve, reject) => port.open((err) => err ? reject(err) : resolve()))
+    return await new Promise<BoardPairing | undefined>((resolve, reject) => {
+      let buffer = ''
+      let discard = false
+      let settled = false
+      const fail = (message: string) => { if (!settled) { settled = true; reject(new Error(message)) } }
+      timer = setTimeout(() => fail('Firmware did not answer USB pairing; update firmware and try again'), 8_000)
+      port.on('error', () => fail('USB pairing serial error'))
+      port.on('close', () => fail('USB serial port closed during pairing'))
+      port.on('data', (bytes: Buffer) => {
+        if (settled) return
+        for (const value of bytes) {
+          if (value === 10 || value === 13) {
+            const line = discard ? '' : buffer
+            buffer = ''; discard = false
+            try {
+              if (line === 'AR1P ERR') return fail('Board rejected USB pairing')
+              if (rotate && line === 'AR1P RESTART') { settled = true; return resolve(undefined) }
+              if (!rotate) {
+                const pairing = parsePairingReply(line, nonce)
+                if (pairing) { settled = true; return resolve(pairing) }
+              }
+            } catch { return fail('Board returned an invalid pairing identity') }
+          } else if (buffer.length < 1152 && !discard) {
+            buffer += String.fromCharCode(value)
+          } else {
+            discard = true
+          }
+        }
+      })
+      port.write(`\nAR1P ${rotate ? 'ROTATE' : `GET ${nonce}`}\n`, (error) => {
+        if (error) fail('USB pairing command write failed')
+      })
+    })
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+    await closeSerialPort(port)
+  }
+}
+
 interface PendingLine {
   ok: RegExp
   fail: RegExp
@@ -367,6 +421,7 @@ async function syncWithSerialport(
   let port: SerialPortInstance | undefined
 
   const take = (line: string): void => {
+    if (line.includes('AR1P OK ')) return // 不把 USB 配对令牌带到校时日志
     lines.push(line)
     const waiter = pending
     if (waiter === undefined) return
@@ -647,7 +702,7 @@ async function syncWithPowerShell(path: string, unixSeconds: number, minutes: nu
     const tag = rest.slice(0, close)
     const text = rest.slice(close + 2)
     if (tag === 'SENT') sent.push(text)
-    else if (tag === 'LINE') lines.push(text)
+    else if (tag === 'LINE' && !text.includes('AR1P OK ')) lines.push(text)
     else if (tag === 'ERROR') {
       if (text.startsWith('open-failed:')) openFailure = text.slice('open-failed:'.length)
       else writeFailure = text

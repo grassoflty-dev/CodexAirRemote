@@ -10,6 +10,7 @@ import { resolveHostConfig, simulatedToken, type AirRemoteHostConfigOverrides } 
 import { FirmwareRoutes } from './host/firmware-routes.js'
 import { FlashRoute } from './host/flash-route.js'
 import { PortsRoute } from './host/ports-route.js'
+import { pairingHandler } from './host/pairing-route.js'
 import { findBoardPort, listBoardPorts, probeSerialport } from './host/serial-port.js'
 import { SerialHolder, SerialRoutes } from './host/serial-holder.js'
 import { SyncGate } from './host/sync-gate.js'
@@ -190,6 +191,8 @@ export async function apply(ctx: Context, config: AirRemoteHostConfigOverrides =
     { path: '/airremote/firmware/manifest', handler: firmwareRoutes.manifestHandler },
     { path: '/airremote/firmware/image', handler: firmwareRoutes.imageHandler },
     { path: '/airremote/ports', handler: portsRoute.handler },
+    { path: '/airremote/pair-usb', handler: pairingHandler(resolved.dataDir, serialHolder) },
+    { path: '/airremote/rotate-usb', handler: pairingHandler(resolved.dataDir, serialHolder, true) },
     { path: '/airremote/serial-state', handler: serialRoutes.stateHandler },
     { path: '/airremote/serial-hold', handler: serialRoutes.holdHandler }
   ]

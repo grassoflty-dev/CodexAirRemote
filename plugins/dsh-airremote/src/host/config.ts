@@ -4,8 +4,8 @@
  * Values come from (highest priority first) the plugin entry config in
  * `cordis.patch.yml`, environment variables, and files under the DSH home:
  *
- *   ~/.dsh/airremote/pairing.txt  - the 64-character token embedded in the firmware
- *   ~/.dsh/airremote/server.crt   - the board's self-signed certificate (optional pin)
+ *   ~/.dsh/airremote/device-pairing.json - device certificate and token imported by USB
+ *   Legacy pairing.txt / caFile settings are not trusted for real boards.
  *   ~/.dsh/airremote/sim.wav      - speech used by the simulated board
  *   ~/.dsh/airremote/time.json    - 设置页选的时区（`auto` 表示跟随系统）
  *

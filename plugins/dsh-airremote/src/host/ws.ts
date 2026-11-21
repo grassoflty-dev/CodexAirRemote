@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Minimal RFC 6455 WebSocket implementation for the two links this plugin owns:
  *
  *  - browser  -> host: the `dsh-host-webserver` upgrade route (`/airremote/audio`)
@@ -339,8 +339,8 @@ export interface BoardTlsOptions {
   ca?: string | Buffer
   /** Hostname to validate; the board certificate is issued for `airremote.local`. */
   servername?: string
-  /** Accept the board's self-signed certificate without a CA (development only). */
-  rejectUnauthorized?: boolean
+  /** SHA-256 fingerprint imported over USB, checked before any HTTP or AUTH data is sent. */
+  fingerprint256?: string
 }
 
 export interface ConnectWebSocketOptions {
@@ -381,14 +381,22 @@ export function connectWebSocket(options: ConnectWebSocketOptions, handlers: WsH
       socket = netConnect({ host: options.host, port: options.port })
       socket.once('connect', sendUpgrade)
     } else {
-      socket = tlsConnect({
+      const tls = options.tls
+      const secure = tlsConnect({
         host: options.host,
         port: options.port,
-        servername: options.tls.servername,
-        ca: options.tls.ca,
-        rejectUnauthorized: options.tls.rejectUnauthorized ?? false
+        servername: tls.servername,
+        ca: tls.ca,
+        rejectUnauthorized: true
       })
-      socket.once('secureConnect', sendUpgrade)
+      socket = secure
+      secure.once('secureConnect', () => {
+        if (tls.fingerprint256 && secure.getPeerCertificate().fingerprint256 !== tls.fingerprint256) {
+          fail(new Error('board certificate changed; pair again over USB'))
+          return
+        }
+        sendUpgrade()
+      })
     }
     socket.on('error', (error: Error) => fail(error))
     socket.on('close', () => {

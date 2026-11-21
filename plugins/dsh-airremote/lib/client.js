@@ -1192,6 +1192,67 @@ window.__ModuleLoader__.load({
 				]
 			});
 		}
+		// src/client/VoicePairing.tsx
+		/** 只处理用户主动点击；浏览器不接触配对令牌或私钥。 */
+		function VoicePairing() {
+			const [busy, setBusy] = (0, react.useState)(false);
+			const [message, setMessage] = (0, react.useState)("");
+			async function run(rotate) {
+				if (busy) return;
+				if (rotate && !window.confirm("更换后，所有已配对的电脑都要重新通过 USB 配对。继续吗？")) return;
+				setBusy(true);
+				setMessage("");
+				try {
+					const response = await fetch(rotate ? "/airremote/rotate-usb" : "/airremote/pair-usb", {
+						method: "POST",
+						headers: { "X-AirRemote-Pairing": "1" }
+					});
+					const data = await response.json();
+					if (response.ok && data.ok) setMessage(rotate ? "板子正在重启。启动后请点「USB 配对」。" : "已配对。TLS 连接只信任这块板的证书。");
+					else if (data.code === "busy") setMessage("串口正在使用，请稍后重试。");
+					else if (data.code === "local-only") setMessage("请在这台电脑的本地 DSH 界面操作。");
+					else setMessage("USB 操作失败。请只连接一块已更新固件的开发板并重试。");
+				} catch {
+					setMessage("无法连接本机插件，请检查插件状态。");
+				} finally {
+					setBusy(false);
+				}
+			}
+			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("section", {
+				style: {
+					display: "grid",
+					gap: "8px"
+				},
+				"aria-label": "语音设备配对",
+				children: [
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("strong", { children: "语音设备配对" }),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: "烧录新版固件后，用数据线连接开发板，再点 USB 配对。更换密钥不会清除蓝牙配对、Wi-Fi 或时区。" }),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+						style: {
+							display: "flex",
+							flexWrap: "wrap",
+							gap: "8px"
+						},
+						children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
+							type: "button",
+							disabled: busy,
+							onClick: () => void run(false),
+							children: "USB 配对"
+						}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
+							type: "button",
+							disabled: busy,
+							onClick: () => void run(true),
+							children: "更换设备密钥"
+						})]
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+						role: "status",
+						"aria-live": "polite",
+						children: message
+					})
+				]
+			});
+		}
 		// src/client/AirRemoteSettings.tsx
 		/**
 		* Single settings page for the plugin: board time on top, firmware flashing
@@ -1217,6 +1278,7 @@ window.__ModuleLoader__.load({
 							background: "rgba(128, 128, 128, 0.25)"
 						}
 					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(VoicePairing, {}),
 					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(FirmwareFlash, {
 						onBoardChange: setBoard,
 						openSocket,
