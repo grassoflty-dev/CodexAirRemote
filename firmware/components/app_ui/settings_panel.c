@@ -71,6 +71,25 @@ static lv_obj_t *bright_knob;
 static lv_obj_t *bright_value;
 static lv_obj_t *rotate_label;
 static lv_obj_t *rotate_hint;
+static lv_style_t flat_styles[5];
+static bool flat_styles_ready;
+static char brightness_text[5];
+
+/* 共享纯色样式，省去重复的对象局部样式与圆角遮罩。 */
+static void flat_rect(lv_obj_t *obj, unsigned index)
+{
+    if (!flat_styles_ready) {
+        const uint32_t colors[] = {PANEL_BG, 0x1b2430, 0x182638, PANEL_TRACK, PANEL_ACCENT};
+        for (unsigned i = 0; i < sizeof(colors) / sizeof(colors[0]); ++i) {
+            lv_style_init(&flat_styles[i]);
+            lv_style_set_bg_color(&flat_styles[i], lv_color_hex(colors[i]));
+            lv_style_set_bg_opa(&flat_styles[i], LV_OPA_COVER);
+        }
+        flat_styles_ready = true;
+    }
+    lv_obj_remove_style_all(obj);
+    lv_obj_add_style(obj, &flat_styles[index], 0);
+}
 
 /* 旋转与设置页 overlay 的交接：overlay 是不透明全屏（480x480），旋转时的整屏
  * 重绘会把它一起算进去，LVGL 池只剩 ~1 KB 时 lv_draw_add_task 空指针 panic
@@ -79,6 +98,8 @@ static lv_obj_t *rotate_hint;
 static bool rotation_in_progress;
 static bool rotation_overlay_dropped;
 static int rotation_last_result;
+/* 诊断：LVGL 已完成渲染/提交刷新，不等同于面板已经扫描显示。 */
+static enum { ROT_FRAME_NONE, ROT_FRAME_MAIN, ROT_FRAME_OVERLAY } rotation_frame_probe;
 static lv_timer_t *rotation_begin_timer;
 static lv_timer_t *rotation_restore_timer;
 static lv_timer_t *rotation_safety_timer;
@@ -130,7 +151,8 @@ static void brightness_refresh_widgets(void)
     int value = app_ui_brightness();
 
     if (bright_value != NULL) {
-        lv_label_set_text_fmt(bright_value, "%d%%", value);
+        snprintf(brightness_text, sizeof(brightness_text), "%u%%", (unsigned)clamp_brightness(value));
+        lv_label_set_text_static(bright_value, brightness_text);
     }
     if (bright_knob != NULL) {
         int32_t span = TRACK_Y2 - TRACK_Y1;
@@ -218,7 +240,7 @@ static lv_obj_t *panel_label(lv_obj_t *parent, const char *text, const lv_font_t
                              uint32_t color, int32_t x, int32_t y)
 {
     lv_obj_t *label = lv_label_create(parent);
-    lv_label_set_text(label, text);
+    lv_label_set_text_static(label, text);
     lv_obj_set_style_text_font(label, font, 0);
     lv_obj_set_style_text_color(label, lv_color_hex(color), 0);
     lv_obj_set_pos(label, x, y);
@@ -231,14 +253,9 @@ static void panel_build(void)
     if (panel_built || panel_screen == NULL) return;
 
     overlay = lv_obj_create(panel_screen);
-    lv_obj_remove_style_all(overlay);
+    flat_rect(overlay, 0);
     lv_obj_set_size(overlay, PANEL_W, PANEL_H);
     lv_obj_set_pos(overlay, 0, 0);
-    lv_obj_set_style_bg_color(overlay, lv_color_hex(PANEL_BG), 0);
-    lv_obj_set_style_bg_opa(overlay, LV_OPA_COVER, 0); /* opaque: nothing bleeds through */
-    lv_obj_set_style_border_width(overlay, 0, 0);
-    lv_obj_set_style_radius(overlay, 0, 0);
-    lv_obj_set_style_pad_all(overlay, 0, 0);
     lv_obj_set_scrollable(overlay, false);
     lv_obj_set_clickable(overlay, true);
     lv_obj_add_event_cb(overlay, overlay_clicked_cb, LV_EVENT_CLICKED, NULL);
@@ -246,37 +263,27 @@ static void panel_build(void)
     panel_label(overlay, "Function settings", &lv_font_montserrat_28, 0xffffff, 24, 18);
 
     lv_obj_t *close = lv_button_create(overlay);
+    flat_rect(close, 1);
     lv_obj_set_size(close, 56, 56);
     lv_obj_set_pos(close, PANEL_W - 56 - 20, 14);
-    lv_obj_set_style_radius(close, 18, 0);
-    lv_obj_set_style_bg_color(close, lv_color_hex(0x1b2430), 0);
-    lv_obj_set_style_bg_color(close, lv_color_hex(0x2b3543), LV_STATE_PRESSED);
-    lv_obj_set_style_shadow_width(close, 0, 0);
     lv_obj_add_event_cb(close, close_clicked_cb, LV_EVENT_SHORT_CLICKED, NULL);
     lv_obj_t *close_label = lv_label_create(close);
-    lv_label_set_text(close_label, LV_SYMBOL_CLOSE);
+    lv_label_set_text_static(close_label, LV_SYMBOL_CLOSE);
     lv_obj_set_style_text_font(close_label, &lv_font_montserrat_28, 0);
     lv_obj_set_style_text_color(close_label, lv_color_white(), 0);
     lv_obj_center(close_label);
 
     lv_obj_t *rotate = lv_button_create(overlay);
+    flat_rect(rotate, 2);
     lv_obj_set_size(rotate, 150, 96);
     lv_obj_set_pos(rotate, 24, 120);
-    lv_obj_set_style_radius(rotate, 18, 0);
-    lv_obj_set_style_bg_color(rotate, lv_color_hex(0x182638), 0);
-    lv_obj_set_style_bg_color(rotate, lv_color_hex(0x405777), LV_STATE_PRESSED);
-    lv_obj_set_style_shadow_width(rotate, 0, 0);
     lv_obj_add_event_cb(rotate, rotate_clicked_cb, LV_EVENT_SHORT_CLICKED, NULL);
-    lv_obj_t *rotate_title = lv_label_create(rotate);
-    lv_label_set_text(rotate_title, "ROTATE");
-    lv_obj_set_style_text_font(rotate_title, &lv_font_montserrat_20, 0);
-    lv_obj_set_style_text_color(rotate_title, lv_color_white(), 0);
-    lv_obj_align(rotate_title, LV_ALIGN_TOP_MID, 0, 18);
     rotate_label = lv_label_create(rotate);
-    lv_label_set_text(rotate_label, "0 deg");
+    lv_label_set_text_static(rotate_label, "ROTATE\n0 deg");
     lv_obj_set_style_text_font(rotate_label, &lv_font_montserrat_20, 0);
-    lv_obj_set_style_text_color(rotate_label, lv_color_hex(PANEL_MUTED), 0);
-    lv_obj_align(rotate_label, LV_ALIGN_BOTTOM_MID, 0, -16);
+    lv_obj_set_style_text_color(rotate_label, lv_color_white(), 0);
+    lv_obj_set_style_text_align(rotate_label, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_center(rotate_label);
 
     /* 旋转失败/内存不足时的可见提示（默认空）。 */
     rotate_hint = panel_label(overlay, "", &lv_font_montserrat_20, 0xe5534b, 24, 226);
@@ -286,23 +293,14 @@ static void panel_build(void)
 
     /* Track (visual only) and knob. */
     bright_track = lv_obj_create(overlay);
-    lv_obj_remove_style_all(bright_track);
+    flat_rect(bright_track, 3);
     lv_obj_set_size(bright_track, TRACK_X2 - TRACK_X1, TRACK_Y2 - TRACK_Y1);
     lv_obj_set_pos(bright_track, TRACK_X1, TRACK_Y1);
-    lv_obj_set_style_bg_color(bright_track, lv_color_hex(PANEL_TRACK), 0);
-    lv_obj_set_style_bg_opa(bright_track, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(bright_track, (TRACK_X2 - TRACK_X1) / 2, 0);
-    lv_obj_set_style_border_width(bright_track, 0, 0);
-    lv_obj_set_style_pad_all(bright_track, 0, 0);
     lv_obj_clear_flag(bright_track, LV_OBJ_FLAG_CLICKABLE);
 
     bright_knob = lv_obj_create(overlay);
-    lv_obj_remove_style_all(bright_knob);
+    flat_rect(bright_knob, 4);
     lv_obj_set_size(bright_knob, KNOB_SIZE, KNOB_SIZE);
-    lv_obj_set_style_radius(bright_knob, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(bright_knob, lv_color_hex(PANEL_ACCENT), 0);
-    lv_obj_set_style_bg_opa(bright_knob, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(bright_knob, 0, 0);
     lv_obj_clear_flag(bright_knob, LV_OBJ_FLAG_CLICKABLE);
 
     /* Wide, transparent hit area above the track: this is what the finger
@@ -311,14 +309,9 @@ static void panel_build(void)
     lv_obj_remove_style_all(bright_hot);
     lv_obj_set_size(bright_hot, BRIGHT_X2 - BRIGHT_X1, BRIGHT_Y2 - BRIGHT_Y1);
     lv_obj_set_pos(bright_hot, BRIGHT_X1, BRIGHT_Y1);
-    lv_obj_set_style_bg_opa(bright_hot, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(bright_hot, 0, 0);
-    lv_obj_set_style_pad_all(bright_hot, 0, 0);
     lv_obj_set_scrollable(bright_hot, false);
     lv_obj_set_clickable(bright_hot, true);
-    lv_obj_add_event_cb(bright_hot, bright_event_cb, LV_EVENT_PRESSED, NULL);
-    lv_obj_add_event_cb(bright_hot, bright_event_cb, LV_EVENT_PRESSING, NULL);
-    lv_obj_add_event_cb(bright_hot, bright_event_cb, LV_EVENT_RELEASED, NULL);
+    lv_obj_add_event_cb(bright_hot, bright_event_cb, LV_EVENT_ALL, NULL);
 
     panel_label(overlay, "swipe up from the bottom to close", &lv_font_montserrat_20,
                0x55606e, 24, PANEL_H - 40);
@@ -384,7 +377,7 @@ static void settings_overlay_restore(void)
 static void rotation_hint_set(const char *text)
 {
     if (rotate_hint == NULL) return;
-    lv_label_set_text(rotate_hint, text);
+    lv_label_set_text_static(rotate_hint, text); /* 所有调用方均传静态字串。 */
 }
 
 /* 隐藏 overlay 后的下一 tick 才请求旋转：内存不足就先删 overlay 回收；仍不足
@@ -432,6 +425,8 @@ static void rotation_begin_cb(lv_timer_t *timer)
 static void rotation_done_cb(int applied_degrees, int result)
 {
     rotation_last_result = result;
+    rotation_frame_probe = result == 0 ? ROT_FRAME_MAIN : ROT_FRAME_NONE;
+    ESP_LOGI(TAG, "rotation diag: hardware result=%d applied=%d", result, applied_degrees);
     if (applied_degrees != rotate_target) rotate_target = applied_degrees;
 
     if (rotation_safety_timer != NULL)
@@ -455,8 +450,16 @@ static void rotation_restore_cb(lv_timer_t *timer)
     if (!rotation_in_progress) return;
     rotation_in_progress = false;
 
+    if (rotation_frame_probe == ROT_FRAME_MAIN) {
+        ESP_LOGW(TAG, "rotation diag: no rotated main refresh before overlay restore");
+    }
+    rotation_frame_probe = ROT_FRAME_OVERLAY;
+    ESP_LOGI(TAG, "rotation diag: restoring settings overlay");
     settings_overlay_restore();
-    if (rotate_label != NULL) lv_label_set_text_fmt(rotate_label, "%d deg", rotate_target);
+    if (rotate_label != NULL) {
+        static const char *const labels[] = {"ROTATE\n0 deg", "ROTATE\n90 deg", "ROTATE\n180 deg", "ROTATE\n270 deg"};
+        lv_label_set_text_static(rotate_label, labels[(unsigned)rotate_target / 90U % 4U]);
+    }
     if (rotation_last_result == 1) rotation_hint_set("内存不足，请稍后重试");
     else if (rotation_last_result == 2) rotation_hint_set("显示忙，请重试");
     else if (rotation_last_result == 3) rotation_hint_set("旋转失败，请重试");
@@ -566,10 +569,23 @@ static void panel_touch_cb(lv_event_t *event)
     }
 }
 
+static void rotation_refresh_probe(lv_event_t *event)
+{
+    (void)event;
+    if (rotation_frame_probe == ROT_FRAME_NONE) return;
+    lv_mem_monitor_t mon;
+    lv_mem_monitor(&mon);
+    ESP_LOGI(TAG, "rotation diag: %s refresh submitted free=%u biggest=%u",
+             rotation_frame_probe == ROT_FRAME_MAIN ? "rotated main" : "restored overlay",
+             (unsigned)mon.free_size, (unsigned)mon.free_biggest_size);
+    rotation_frame_probe = ROT_FRAME_NONE;
+}
+
 void settings_panel_init(lv_obj_t *screen, lv_display_t *display, lv_indev_t *indev)
 {
     panel_screen = screen;
     panel_display = display;
+    if (display != NULL) lv_display_add_event_cb(display, rotation_refresh_probe, LV_EVENT_REFR_READY, NULL);
     touch_indev = indev;
     panel_open = false;
     panel_built = false;
