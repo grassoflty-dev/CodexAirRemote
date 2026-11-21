@@ -34,8 +34,7 @@ ESP32-C6 ──WSS 47683──▶ host（TLS 客户端 + UDP 47682 发现）
 
 ## 安装 / 更新 / 卸载
 
-> 仓库内插件 `0.5.7`，内置固件 `0.7.3`；Discover 仍提供 `0.5.5` / `0.7.2`。
-> `0.7.3` 已知旋转后可能持续上下错位，尚未通过旋转验收。已验证的 DSH：**0.2.2-rc.3**；最低要求 `>=0.2.0-rc.1`。
+> 插件 `0.5.9`，内置固件 `0.7.5`。旧版语音凭据已作废；刷新版后，在本机 Air remote 设置里执行 **USB 配对**。已验证的 DSH：**0.2.2-rc.3**；最低要求 `>=0.2.0-rc.1`。
 
 ### 方式一：本地 tarball（最稳，推荐给离线/单机环境）
 
@@ -43,11 +42,11 @@ ESP32-C6 ──WSS 47683──▶ host（TLS 客户端 + UDP 47682 发现）
    ```powershell
    cd plugins/dsh-airremote
    npm pack --pack-destination E:\Develop\airremote-dist
-   # 产物：E:\Develop\airremote-dist\dsh-airremote-0.5.7.tgz
+   # 产物：E:\Develop\airremote-dist\dsh-airremote-0.5.9.tgz
    ```
 2. 交给 DSH 官方插件管理入口安装（`target` = tarball 的**绝对路径**）：
    ```text
-   plugin_manager install_bundle  E:\Develop\airremote-dist\dsh-airremote-0.5.7.tgz
+   plugin_manager install_bundle  E:\Develop\airremote-dist\dsh-airremote-0.5.9.tgz
    ```
 3. 在 **Plugins → Installed** 确认 `dsh-airremote` 已启用。更新已装版本后重启 DSH，再核对设置页显示的内置固件版本。若更新报 `@serialport/bindings-cpp` 的 `EPERM`，请先确认占用文件的旧宿主已退出，再用官方安装入口重试；不要手工修改 profile。
 
@@ -207,8 +206,7 @@ UTC+1 柏林 / UTC+8 北京 / UTC+9 东京）、一个「同步到开发板」�
 
 `%USERPROFILE%\.dsh\airremote\`：
 
-- `pairing.txt`：固件 `pairing.txt` 的 64 字符 token（秘密）；
-- `server.crt`：板子自签名证书（TLS pin；缺失则不校验）；
+- `device-pairing.json`：本机经 USB 导入的设备证书与配对令牌（秘密，不得共享）；私钥只保存在板端。缺少有效配对时，真实语音连接被拒绝，不回退到旧凭据或不校验证书的 TLS。
 - `simulate`：存在即启用模拟板子；
 - `sim.wav`：模拟板子循环的 16 kHz mono WAV；
 - `time.json`：设置页「开发板时间」选的时区与自动对时开关，

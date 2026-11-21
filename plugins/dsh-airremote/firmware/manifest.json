@@ -1,12 +1,12 @@
 {
   "plugin": "dsh-airremote",
   "chip": "esp32c6",
-  "version": "0.7.3",
-  "commit": "49e5257",
+  "version": "0.7.5",
+  "commit": "5500ab2a35879adb1ebe463a091f24392e6b750e",
   "flashOffset": 0,
-  "size": 4699680,
-  "sha256": "5999b5547e344ad6970d35c6be67f60234d32855b5d5fb8858b246fa8faeb668",
-  "builtAt": "2026-11-15T02:52:55.904Z",
+  "size": 4712240,
+  "sha256": "f105f53862479a87f4237b744a53a44795295a1a35ad2795841cb83d560420fb",
+  "builtAt": "2026-11-21T11:12:18.579Z",
   "regions": [
     {
       "offset": 0,
@@ -25,7 +25,7 @@
     },
     {
       "offset": 2097152,
-      "size": 2602528,
+      "size": 2615088,
       "name": "codex_air_remote"
     }
   ]

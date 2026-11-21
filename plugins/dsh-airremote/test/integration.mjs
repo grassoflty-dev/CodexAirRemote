@@ -90,6 +90,7 @@ async function testFakeBoardDiscoveryAndSession() {
   const session = new BoardSession({
     config: config(),
     discovery,
+    simulation: board.address,
     events: {
       onPcm: (pcm, sequence) => frames.push({ pcm, sequence }),
       onEnd: (reason, detail) => {
