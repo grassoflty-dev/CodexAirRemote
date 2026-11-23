@@ -1,16 +1,7 @@
 /*
- * "Function settings" panel: a full screen page that drops in from the top of
- * the normal page (top swipe) and leaves with a bottom-up swipe (phone style),
- * a close button, or a tap on empty space.
- *
- * Layout (480 x 480 panel):
- *   - title + close button on top
- *   - ROTATE button on the left (90 degrees counter-clockwise per press)
- *   - brightness hot area on the right: x 300..456, y 90..410. The whole
- *     156 x 320 rectangle is the hit area; a 40 px wide track is drawn inside
- *     and the value follows the finger's ABSOLUTE y, so no incremental drift.
- *   - bottom hint "swipe up to close"; the close swipe starts at y >= 420 so it
- *     can never fight with the brightness area (which ends at y 410).
+ * 全屏功能页：从主界面顶部下划进入，从功能页底部上划退出。
+ * 左侧为旋转按钮，右侧为底部向上填充的亮度条，触摸位置直接映射到亮度。
+ * 亮度触摸区止于 y=410，退出手势从 y>=420 开始，互不干扰。
  *
  * The widgets are built lazily on the first open and then reused: the normal
  * page stays as light as before for the LVGL pool, which matters because the
@@ -23,7 +14,6 @@
 #include "settings_panel.h"
 
 #include <stdbool.h>
-#include <stdio.h>
 
 #include "app_busy.h"
 #include "app_ui.h"
@@ -43,11 +33,12 @@ static const char *TAG = "settings";
 #define BRIGHT_Y1 90
 #define BRIGHT_X2 456
 #define BRIGHT_Y2 410
-#define TRACK_X1 358
-#define TRACK_X2 398
+#define TRACK_X1 324
+#define TRACK_X2 432
 #define TRACK_Y1 100
 #define TRACK_Y2 400
-#define KNOB_SIZE 44
+#define TRACK_RADIUS 24
+#define SUN_CENTER_OFFSET 36
 
 #define BRIGHT_MIN 5
 #define BRIGHT_MAX 100
@@ -60,26 +51,24 @@ static const char *TAG = "settings";
 #define CLOSE_MIN_DY 70
 
 #define PANEL_BG 0x0b0f14
-#define PANEL_TRACK 0x22303f
-#define PANEL_ACCENT 0x4f8cff
-#define PANEL_MUTED 0x8a97a8
+#define PANEL_TRACK 0x38383a
+#define PANEL_FILL 0xf5f5f7
+
+LV_FONT_DECLARE(ui_font_settings_zh_24);
 
 static lv_obj_t *overlay;
 static lv_obj_t *bright_hot;
-static lv_obj_t *bright_track;
-static lv_obj_t *bright_knob;
-static lv_obj_t *bright_value;
+static lv_obj_t *bright_sun;
 static lv_obj_t *rotate_label;
 static lv_obj_t *rotate_hint;
-static lv_style_t flat_styles[5];
+static lv_style_t flat_styles[2];
 static bool flat_styles_ready;
-static char brightness_text[5];
 
 /* 共享纯色样式，省去重复的对象局部样式与圆角遮罩。 */
 static void flat_rect(lv_obj_t *obj, unsigned index)
 {
     if (!flat_styles_ready) {
-        const uint32_t colors[] = {PANEL_BG, 0x1b2430, 0x182638, PANEL_TRACK, PANEL_ACCENT};
+        const uint32_t colors[] = {PANEL_BG, 0x182638};
         for (unsigned i = 0; i < sizeof(colors) / sizeof(colors[0]); ++i) {
             lv_style_init(&flat_styles[i]);
             lv_style_set_bg_color(&flat_styles[i], lv_color_hex(colors[i]));
@@ -146,20 +135,50 @@ static int brightness_from_y(int32_t y)
     return ((value + BRIGHT_STEP / 2) / BRIGHT_STEP) * BRIGHT_STEP;
 }
 
+static int32_t brightness_fill_height(void)
+{
+    return (clamp_brightness(app_ui_brightness()) * (TRACK_Y2 - TRACK_Y1)) / BRIGHT_MAX;
+}
+
+/* 同一个圆角轮廓绘制两种颜色，白色部分只在填充高度内出现。
+ * 不创建全尺寸图层或画布，继续使用现有 LVGL 分块刷新。 */
+static void brightness_draw_cb(lv_event_t *event)
+{
+    lv_layer_t *layer = lv_event_get_layer(event);
+    lv_area_t touch_area;
+    lv_obj_get_coords(bright_hot, &touch_area);
+    const lv_area_t track = {
+        .x1 = touch_area.x1 + TRACK_X1 - BRIGHT_X1,
+        .y1 = touch_area.y1 + TRACK_Y1 - BRIGHT_Y1,
+        .x2 = touch_area.x1 + TRACK_X2 - BRIGHT_X1 - 1,
+        .y2 = touch_area.y1 + TRACK_Y2 - BRIGHT_Y1 - 1,
+    };
+    const int32_t split = track.y2 + 1 - brightness_fill_height();
+    const lv_area_t clip = layer->_clip_area;
+    lv_draw_fill_dsc_t style;
+    lv_draw_fill_dsc_init(&style);
+    style.radius = TRACK_RADIUS;
+    if (split > track.y1 && clip.y1 < split) {
+        layer->_clip_area.y2 = LV_MIN(clip.y2, split - 1);
+        style.color = lv_color_hex(PANEL_TRACK);
+        lv_draw_fill(layer, &style, &track);
+    }
+    if (clip.y2 >= split) {
+        layer->_clip_area = clip;
+        layer->_clip_area.y1 = LV_MAX(clip.y1, split);
+        style.color = lv_color_hex(PANEL_FILL);
+        lv_draw_fill(layer, &style, &track);
+    }
+    layer->_clip_area = clip;
+}
+
 static void brightness_refresh_widgets(void)
 {
-    int value = app_ui_brightness();
-
-    if (bright_value != NULL) {
-        snprintf(brightness_text, sizeof(brightness_text), "%u%%", (unsigned)clamp_brightness(value));
-        lv_label_set_text_static(bright_value, brightness_text);
+    if (bright_sun != NULL) {
+        lv_obj_set_style_text_color(bright_sun, lv_color_hex(
+            brightness_fill_height() >= SUN_CENTER_OFFSET ? PANEL_TRACK : PANEL_FILL), 0);
     }
-    if (bright_knob != NULL) {
-        int32_t span = TRACK_Y2 - TRACK_Y1;
-        int32_t offset = ((BRIGHT_MAX - value) * span) / (BRIGHT_MAX - BRIGHT_MIN);
-        lv_obj_set_pos(bright_knob, (TRACK_X1 + TRACK_X2) / 2 - KNOB_SIZE / 2,
-                       TRACK_Y1 + offset - KNOB_SIZE / 2);
-    }
+    if (bright_hot != NULL) lv_obj_invalidate(bright_hot);
 }
 
 static void apply_brightness_from_point(const lv_point_t *point)
@@ -189,20 +208,6 @@ static void bright_event_cb(lv_event_t *event)
     }
     apply_brightness_from_point(&point);
     app_ui_note_activity();
-}
-
-static void overlay_clicked_cb(lv_event_t *event)
-{
-    /* Only fires when the overlay itself is the target: presses on the sheet
-     * widgets have their own targets, so dragging the brightness area can
-     * never close the panel this way. */
-    if (lv_event_get_target(event) == overlay) settings_panel_close();
-}
-
-static void close_clicked_cb(lv_event_t *event)
-{
-    (void)event;
-    settings_panel_close();
 }
 
 /*
@@ -258,63 +263,37 @@ static void panel_build(void)
     lv_obj_set_pos(overlay, 0, 0);
     lv_obj_set_scrollable(overlay, false);
     lv_obj_set_clickable(overlay, true);
-    lv_obj_add_event_cb(overlay, overlay_clicked_cb, LV_EVENT_CLICKED, NULL);
-
-    panel_label(overlay, "Function settings", &lv_font_montserrat_28, 0xffffff, 24, 18);
-
-    lv_obj_t *close = lv_button_create(overlay);
-    flat_rect(close, 1);
-    lv_obj_set_size(close, 56, 56);
-    lv_obj_set_pos(close, PANEL_W - 56 - 20, 14);
-    lv_obj_add_event_cb(close, close_clicked_cb, LV_EVENT_SHORT_CLICKED, NULL);
-    lv_obj_t *close_label = lv_label_create(close);
-    lv_label_set_text_static(close_label, LV_SYMBOL_CLOSE);
-    lv_obj_set_style_text_font(close_label, &lv_font_montserrat_28, 0);
-    lv_obj_set_style_text_color(close_label, lv_color_white(), 0);
-    lv_obj_center(close_label);
 
     lv_obj_t *rotate = lv_button_create(overlay);
-    flat_rect(rotate, 2);
+    flat_rect(rotate, 1);
     lv_obj_set_size(rotate, 150, 96);
     lv_obj_set_pos(rotate, 24, 120);
     lv_obj_add_event_cb(rotate, rotate_clicked_cb, LV_EVENT_SHORT_CLICKED, NULL);
     rotate_label = lv_label_create(rotate);
-    lv_label_set_text_static(rotate_label, "ROTATE\n0 deg");
-    lv_obj_set_style_text_font(rotate_label, &lv_font_montserrat_20, 0);
+    lv_label_set_text_static(rotate_label, "旋转\n0度");
+    lv_obj_set_style_text_font(rotate_label, &ui_font_settings_zh_24, 0);
     lv_obj_set_style_text_color(rotate_label, lv_color_white(), 0);
     lv_obj_set_style_text_align(rotate_label, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_center(rotate_label);
 
     /* 旋转失败/内存不足时的可见提示（默认空）。 */
-    rotate_hint = panel_label(overlay, "", &lv_font_montserrat_20, 0xe5534b, 24, 226);
+    rotate_hint = panel_label(overlay, "", &ui_font_settings_zh_24, 0xe5534b, 24, 226);
 
-    panel_label(overlay, "Brightness", &lv_font_montserrat_20, PANEL_MUTED, BRIGHT_X1, 52);
-    bright_value = panel_label(overlay, "60%", &lv_font_montserrat_28, 0xffffff, BRIGHT_X1 + 96, 44);
-
-    /* Track (visual only) and knob. */
-    bright_track = lv_obj_create(overlay);
-    flat_rect(bright_track, 3);
-    lv_obj_set_size(bright_track, TRACK_X2 - TRACK_X1, TRACK_Y2 - TRACK_Y1);
-    lv_obj_set_pos(bright_track, TRACK_X1, TRACK_Y1);
-    lv_obj_clear_flag(bright_track, LV_OBJ_FLAG_CLICKABLE);
-
-    bright_knob = lv_obj_create(overlay);
-    flat_rect(bright_knob, 4);
-    lv_obj_set_size(bright_knob, KNOB_SIZE, KNOB_SIZE);
-    lv_obj_clear_flag(bright_knob, LV_OBJ_FLAG_CLICKABLE);
-
-    /* Wide, transparent hit area above the track: this is what the finger
-     * actually hits, so the slider never depends on a 26 px widget. */
+    /* 亮度条画在较宽的触摸区内；太阳图标不拦截拖动。 */
     bright_hot = lv_obj_create(overlay);
     lv_obj_remove_style_all(bright_hot);
     lv_obj_set_size(bright_hot, BRIGHT_X2 - BRIGHT_X1, BRIGHT_Y2 - BRIGHT_Y1);
     lv_obj_set_pos(bright_hot, BRIGHT_X1, BRIGHT_Y1);
     lv_obj_set_scrollable(bright_hot, false);
     lv_obj_set_clickable(bright_hot, true);
+    lv_obj_add_event_cb(bright_hot, brightness_draw_cb, LV_EVENT_DRAW_MAIN, NULL);
     lv_obj_add_event_cb(bright_hot, bright_event_cb, LV_EVENT_ALL, NULL);
-
-    panel_label(overlay, "swipe up from the bottom to close", &lv_font_montserrat_20,
-               0x55606e, 24, PANEL_H - 40);
+    bright_sun = lv_label_create(bright_hot);
+    lv_label_set_text_static(bright_sun, "☀");
+    lv_obj_set_style_text_font(bright_sun, &ui_font_settings_zh_24, 0);
+    lv_obj_set_clickable(bright_sun, false);
+    lv_obj_align(bright_sun, LV_ALIGN_BOTTOM_MID, 0,
+                 TRACK_Y2 - BRIGHT_Y2 - SUN_CENTER_OFFSET + (int32_t)ui_font_settings_zh_24.line_height / 2);
 
     lv_obj_set_hidden(overlay, true);
     brightness_refresh_widgets();
@@ -343,9 +322,7 @@ static void settings_overlay_drop(void)
     overlay = NULL;
     rotate_label = NULL;
     rotate_hint = NULL;
-    bright_value = NULL;
-    bright_track = NULL;
-    bright_knob = NULL;
+    bright_sun = NULL;
     bright_hot = NULL;
     panel_built = false;
     rotation_overlay_dropped = true;
@@ -457,7 +434,7 @@ static void rotation_restore_cb(lv_timer_t *timer)
     ESP_LOGI(TAG, "rotation diag: restoring settings overlay");
     settings_overlay_restore();
     if (rotate_label != NULL) {
-        static const char *const labels[] = {"ROTATE\n0 deg", "ROTATE\n90 deg", "ROTATE\n180 deg", "ROTATE\n270 deg"};
+        static const char *const labels[] = {"旋转\n0度", "旋转\n90度", "旋转\n180度", "旋转\n270度"};
         lv_label_set_text_static(rotate_label, labels[(unsigned)rotate_target / 90U % 4U]);
     }
     if (rotation_last_result == 1) rotation_hint_set("内存不足，请稍后重试");

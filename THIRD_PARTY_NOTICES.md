@@ -28,6 +28,10 @@
 | espressif/esp_lcd_touch | 1.2.1 | Apache-2.0；按需自动引入 |
 | espressif/button、esp_lv_decoder、esp_lv_fs、esp_mmap_assets、esp_new_jpeg、freetype、knob、libpng、qoi、zlib | 见 lock | 由 `esp_lvgl_adapter` 按需引入，组件级许可证以各组件声明为准（多数为 Apache-2.0，freetype 为 FTL/GPLv2 双许可） |
 
+### 固件字形资源
+
+功能页使用 [Noto Sans SC](https://github.com/google/fonts/tree/main/ofl/notosanssc) 的少量字形，转换为 24 px / 4 bpp LVGL 字体。版权为 Adobe，SIL Open Font License 1.1 全文见 [NotoSansSC-OFL.txt](firmware/components/app_ui/fonts/NotoSansSC-OFL.txt)。
+
 ### 仓库内置组件（`firmware/components/`）
 
 | 组件 | 来源 | 许可证 |

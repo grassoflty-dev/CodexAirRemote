@@ -9,8 +9,8 @@
  *
  * A full screen (480x480, opaque) page that drops in from the top of the NORMAL
  * page. Open: downward swipe starting in the top hot zone (never on the standby
- * page). Close: swipe up from the bottom, the close button, or a tap on empty
- * space. While it is open it holds app_busy(APP_BUSY_SETTINGS), so the 60 s
+ * page). Close: swipe up from the bottom. Tapping empty space does not close it.
+ * While it is open it holds app_busy(APP_BUSY_SETTINGS), so the 60 s
  * idle -> standby timer does not run; closing it releases the hold and the
  * countdown starts over.
  *
